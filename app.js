@@ -7,98 +7,31 @@
    API : GameData365 via Render
    Historique : 100 manches
    Analyse récente : 20 manches
+   Modèle : statistique + temporel
 ========================================= */
 
 const CONFIG = {
   API_BASE: "https://ai-crash-signal-bot.onrender.com",
-  GAME_ID: "lucky_jet",
   HISTORY_LIMIT: 100,
-  RECENT_WINDOW: 20
+  RECENT_WINDOW: 20,
+  REFRESH_INTERVAL: 60000,
+  COUNTDOWN_INTERVAL: 1000
 };
 
 const $ = id => document.getElementById(id);
 
-let analysisInProgress = false;
-
-/* =========================================
-   AFFICHAGE
-========================================= */
-
-function display(id, value) {
-  const element = $(id);
-  if (element) element.textContent = value;
-}
-
-function setStatus(message) {
-  display("status", message);
-}
-
-function reportError(message) {
-  console.error("[AI CRASH BOT]", message);
-  setStatus("Erreur : " + message);
-}
-
-window.addEventListener("error", event => {
-  reportError("Erreur JavaScript : " + event.message);
-});
-
-window.addEventListener("unhandledrejection", event => {
-  reportError(
-    "Erreur inattendue : " +
-    (event.reason?.message || String(event.reason))
-  );
-});
-
-/* =========================================
-   CONNEXION RENDER
-========================================= */
-
-async function apiRequest(endpoint) {
-  let response;
-
-  try {
-    response = await fetch(CONFIG.API_BASE + endpoint, {
-      method: "GET",
-      headers: {
-        "Accept": "application/json"
-      }
-    });
-  } catch (error) {
-    throw new Error(
-      "Impossible de joindre Render. Vérifie ta connexion."
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error("Erreur HTTP Render : " + response.status);
-  }
-
-  let data;
-
-  try {
-    data = await response.json();
-  } catch (error) {
-    throw new Error("Réponse JSON invalide du serveur.");
-  }
-
-  if (data.error || data.status === "error") {
-    throw new Error(
-      data.error || data.message || "Erreur API."
-    );
-  }
-
-  return data;
-}
+let countdownTimer = null;
+let refreshTimer = null;
+let nextEstimatedTime = null;
 
 /* =========================================
    OUTILS MATHÉMATIQUES
 ========================================= */
 
 function average(values) {
-  if (!values.length) return 0;
-
-  return values.reduce((a, b) => a + b, 0) /
-    values.length;
+  return values.length
+    ? values.reduce((a, b) => a + b, 0) / values.length
+    : 0;
 }
 
 function median(values) {
@@ -112,375 +45,505 @@ function median(values) {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function variance(values) {
-  if (values.length < 2) return 0;
-
-  const mean = average(values);
-
-  return average(
-    values.map(x => Math.pow(x - mean, 2))
-  );
-}
-
-function standardDeviation(values) {
-  return Math.sqrt(variance(values));
-}
-
-function percentage(condition, values) {
-  if (!values.length) return 0;
-
-  return 100 *
-    values.filter(condition).length /
-    values.length;
-}
-
 function quantile(values, q) {
   if (!values.length) return 0;
 
   const sorted = [...values].sort((a, b) => a - b);
   const position = (sorted.length - 1) * q;
-
   const lower = Math.floor(position);
   const upper = Math.ceil(position);
 
   if (lower === upper) return sorted[lower];
 
   return sorted[lower] +
-    (sorted[upper] - sorted[lower]) *
-    (position - lower);
+    (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
-function wilsonInterval(successes, total) {
-  if (!total) return [0, 0];
+function stddev(values) {
+  if (values.length < 2) return 0;
 
-  const z = 1.96;
-  const p = successes / total;
-  const denominator = 1 + z * z / total;
+  const avg = average(values);
 
-  const center =
-    (p + z * z / (2 * total)) / denominator;
-
-  const margin =
-    z * Math.sqrt(
-      p * (1 - p) / total +
-      z * z / (4 * total * total)
-    ) / denominator;
-
-  return [
-    100 * (center - margin),
-    100 * (center + margin)
-  ];
-}
-
-/* =========================================
-   CORRÉLATION SUCCESSIVE
-========================================= */
-
-function correlation(values) {
-  if (values.length < 3) return 0;
-
-  const x = values.slice(0, -1);
-  const y = values.slice(1);
-
-  const mx = average(x);
-  const my = average(y);
-
-  let numerator = 0;
-  let sumX = 0;
-  let sumY = 0;
-
-  for (let i = 0; i < x.length; i++) {
-    numerator += (x[i] - mx) * (y[i] - my);
-    sumX += Math.pow(x[i] - mx, 2);
-    sumY += Math.pow(y[i] - my, 2);
-  }
-
-  const denominator = Math.sqrt(sumX * sumY);
-
-  return denominator ? numerator / denominator : 0;
-}
-
-/* =========================================
-   SÉRIES ET TEST STATISTIQUE
-========================================= */
-
-function longestStreak(values, condition) {
-  let current = 0;
-  let longest = 0;
-
-  for (const value of values) {
-    if (condition(value)) {
-      current++;
-      longest = Math.max(longest, current);
-    } else {
-      current = 0;
-    }
-  }
-
-  return longest;
-}
-
-function runsTest(values) {
-  if (values.length < 2) {
-    return { runs: 0, z: 0 };
-  }
-
-  const binary = values.map(x => x < 2 ? 1 : 0);
-
-  const n1 = binary.filter(x => x === 1).length;
-  const n2 = binary.length - n1;
-
-  if (!n1 || !n2) {
-    return { runs: 1, z: 0 };
-  }
-
-  let runs = 1;
-
-  for (let i = 1; i < binary.length; i++) {
-    if (binary[i] !== binary[i - 1]) runs++;
-  }
-
-  const n = n1 + n2;
-  const expected = 1 + (2 * n1 * n2) / n;
-
-  const standardError = Math.sqrt(
-    (2 * n1 * n2 * (2 * n1 * n2 - n)) /
-    (n * n * (n - 1))
+  return Math.sqrt(
+    average(values.map(value => Math.pow(value - avg, 2)))
   );
+}
 
-  return {
-    runs,
-    z: standardError
-      ? (runs - expected) / standardError
-      : 0
-  };
+function percentage(condition, values) {
+  if (!values.length) return 0;
+
+  return 100 *
+    values.filter(condition).length / values.length;
+}
+
+function formatNumber(value, decimals = 2) {
+  return Number(value).toFixed(decimals);
+}
+
+function formatMultiplier(value) {
+  return formatNumber(value, 2) + "x";
 }
 
 /* =========================================
-   NORMALISATION HISTORIQUE
+   CONNEXION API RENDER
 ========================================= */
 
-function normalizeRounds(history) {
-  let rounds = [];
+async function request(endpoint) {
+  const response = await fetch(CONFIG.API_BASE + endpoint, {
+    method: "GET",
+    headers: {
+      "Accept": "application/json"
+    },
+    cache: "no-store"
+  });
 
-  if (Array.isArray(history.rounds)) {
-    rounds = history.rounds;
-  } else if (Array.isArray(history.data?.rounds)) {
-    rounds = history.data.rounds;
-  } else if (Array.isArray(history.results)) {
-    rounds = history.results;
-  } else if (Array.isArray(history.data)) {
-    rounds = history.data;
+  if (!response.ok) {
+    throw new Error(
+      "Erreur API : " + response.status
+    );
   }
+
+  return await response.json();
+}
+
+/* =========================================
+   RÉCUPÉRATION DES DONNÉES
+========================================= */
+
+function getLiveGame(data) {
+  const games = data.games || [];
+
+  return games.find(game =>
+    game.game_id === "lucky_jet"
+  ) || games[0] || null;
+}
+
+function normalizeHistory(data) {
+  const rounds = Array.isArray(data.rounds)
+    ? data.rounds
+    : [];
 
   return rounds
-    .map(round => ({
-      id: round.round_id || round.id || null,
-      multiplier: Number(
-        round.multiplier ?? round.coefficient
-      ),
-      timestamp:
-        round.timestamp ||
-        round.created_at ||
-        round.date ||
-        null
-    }))
-    .filter(round =>
-      Number.isFinite(round.multiplier) &&
-      round.multiplier >= 1
-    )
-    .sort((a, b) => {
-      if (!a.timestamp || !b.timestamp) return 0;
+    .map(round => {
+      const multiplier = Number(round.multiplier);
 
-      return new Date(b.timestamp) -
-        new Date(a.timestamp);
+      const timestamp = new Date(
+        round.timestamp
+      ).getTime();
+
+      if (
+        !Number.isFinite(multiplier) ||
+        multiplier <= 0 ||
+        !Number.isFinite(timestamp)
+      ) {
+        return null;
+      }
+
+      return {
+        multiplier,
+        timestamp,
+        round_id: round.round_id || ""
+      };
     })
-    .slice(0, CONFIG.HISTORY_LIMIT);
+    .filter(Boolean)
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .slice(-CONFIG.HISTORY_LIMIT);
 }
 
 /* =========================================
    ANALYSE STATISTIQUE
 ========================================= */
 
-function calculateAnalysis(rounds) {
-  const values = rounds.map(x => x.multiplier);
+function analyseStatistics(rounds) {
+  const values = rounds.map(round => round.multiplier);
 
-  if (values.length < 20) {
-    throw new Error(
-      "Historique insuffisant : " +
-      values.length +
-      " manches reçues, 20 nécessaires."
-    );
-  }
+  const recent = values.slice(-CONFIG.RECENT_WINDOW);
+  const previous = values.slice(
+    -CONFIG.RECENT_WINDOW * 2,
+    -CONFIG.RECENT_WINDOW
+  );
 
-  const recent = values.slice(0, 20);
-  const previous = values.slice(20, 40);
+  const mean100 = average(values);
+  const median100 = median(values);
+  const volatility = stddev(values);
 
-  const lowCount = values.filter(x => x < 2).length;
+  const recentMean = average(recent);
+  const recentMedian = median(recent);
+
+  const q25 = quantile(recent, 0.25);
+  const q75 = quantile(recent, 0.75);
+
+  const under2 = percentage(
+    value => value < 2,
+    values
+  );
+
+  const over5 = percentage(
+    value => value >= 5,
+    values
+  );
+
+  const recentUnder2 = percentage(
+    value => value < 2,
+    recent
+  );
+
+  const recentOver5 = percentage(
+    value => value >= 5,
+    recent
+  );
+
+  const difference = previous.length
+    ? recentMean - average(previous)
+    : 0;
 
   return {
-    sampleSize: values.length,
-
-    mean: average(values),
-    median: median(values),
-    deviation: standardDeviation(values),
-
-    q25: quantile(values, 0.25),
-    q75: quantile(values, 0.75),
-    q90: quantile(values, 0.90),
-
-    under2: percentage(x => x < 2, values),
-    over2: percentage(x => x >= 2, values),
-    over5: percentage(x => x >= 5, values),
-    over10: percentage(x => x >= 10, values),
-
-    lowInterval: wilsonInterval(
-      lowCount,
-      values.length
-    ),
-
-    recentMean: average(recent),
-    recentMedian: median(recent),
-
-    recentLow: percentage(x => x < 2, recent),
-    recentHigh: percentage(x => x >= 5, recent),
-
-    previousMean: previous.length
-      ? average(previous)
-      : null,
-
-    meanDifference: previous.length
-      ? average(recent) - average(previous)
-      : null,
-
-    correlation: correlation(values),
-
-    longestLowStreak: longestStreak(
-      values,
-      x => x < 2
-    ),
-
-    longestHighStreak: longestStreak(
-      values,
-      x => x >= 5
-    ),
-
-    runs: runsTest(values),
-
-    recentValues: recent
+    values,
+    recent,
+    mean100,
+    median100,
+    volatility,
+    recentMean,
+    recentMedian,
+    q25,
+    q75,
+    under2,
+    over5,
+    recentUnder2,
+    recentOver5,
+    difference
   };
 }
 
 /* =========================================
-   FORMATAGE
+   ANALYSE TEMPORELLE
+   Étude des intervalles entre les manches
 ========================================= */
 
-function format(value) {
-  return Number(value).toFixed(2);
+function analyseTiming(rounds) {
+  if (rounds.length < 3) {
+    throw new Error(
+      "Pas assez de données temporelles."
+    );
+  }
+
+  const intervals = [];
+
+  for (let i = 1; i < rounds.length; i++) {
+    const difference =
+      (rounds[i].timestamp - rounds[i - 1].timestamp) / 1000;
+
+    // Écarter les intervalles aberrants
+    if (difference >= 1 && difference <= 600) {
+      intervals.push(difference);
+    }
+  }
+
+  if (intervals.length < 3) {
+    throw new Error(
+      "Intervalles entre manches insuffisants."
+    );
+  }
+
+  const recentIntervals = intervals.slice(-20);
+
+  const typicalInterval = median(recentIntervals);
+
+  const latestRound = rounds[rounds.length - 1];
+
+  const estimatedTime =
+    latestRound.timestamp + typicalInterval * 1000;
+
+  return {
+    intervals,
+    recentIntervals,
+    typicalInterval,
+    estimatedTime,
+    latestTimestamp: latestRound.timestamp
+  };
 }
 
 /* =========================================
-   AFFICHAGE DES RÉSULTATS
+   AFFICHAGE DES STATISTIQUES
 ========================================= */
 
-function displayResults(stats) {
-  display("count", stats.sampleSize);
+function displayStatistics(stats, rounds) {
+  const set = (id, value) => {
+    const element = $(id);
+    if (element) element.textContent = value;
+  };
 
-  display("mean", format(stats.mean) + "x");
-  display("median", format(stats.median) + "x");
+  set("count", stats.values.length);
+  set("mean", formatMultiplier(stats.mean100));
+  set("median", formatMultiplier(stats.median100));
+  set("volatility", formatNumber(stats.volatility, 2));
 
-  display(
-    "volatility",
-    format(stats.deviation)
-  );
+  set("under2", formatNumber(stats.under2, 1) + "%");
+  set("over5", formatNumber(stats.over5, 1) + "%");
 
-  display(
-    "under2",
-    stats.under2.toFixed(1) + "%"
-  );
+  set("recentMean", formatMultiplier(stats.recentMean));
+  set("recentLow", formatNumber(stats.recentUnder2, 1) + "%");
+  set("recentHigh", formatNumber(stats.recentOver5, 1) + "%");
 
-  display(
-    "over5",
-    stats.over5.toFixed(1) + "%"
-  );
-
-  display(
-    "recentMean",
-    format(stats.recentMean) + "x"
-  );
-
-  display(
-    "recentLow",
-    stats.recentLow.toFixed(1) + "%"
-  );
-
-  display(
-    "recentHigh",
-    stats.recentHigh.toFixed(1) + "%"
-  );
-
-  display(
+  set(
     "difference",
-    stats.meanDifference === null
-      ? "Données insuffisantes"
-      : (stats.meanDifference > 0 ? "+" : "") +
-        format(stats.meanDifference) + "x"
+    (stats.difference >= 0 ? "+" : "") +
+    formatNumber(stats.difference, 2) + "x"
   );
+
+  const interpretation = $("interpretation");
+
+  if (interpretation) {
+    interpretation.textContent =
+      stats.difference > 0
+        ? "La moyenne récente est supérieure à celle des 20 manches précédentes. Cela ne prouve pas un changement de probabilité."
+        : stats.difference < 0
+          ? "La moyenne récente est inférieure à celle des 20 manches précédentes. Cela ne prouve pas un changement de probabilité."
+          : "Les moyennes récentes sont similaires.";
+  }
+
+  const feed = $("feed");
+
+  if (feed) {
+    feed.textContent = rounds
+      .slice(-20)
+      .reverse()
+      .map(round => formatMultiplier(round.multiplier))
+      .join(", ");
+  }
 
   const results = $("results");
 
   if (results) {
-    results.innerHTML = stats.recentValues
-      .map(value => {
-        const color =
-          value < 2 ? "red" :
-          value >= 5 ? "green" : "blue";
-
-        return `
-          <div class="result ${color}">
-            ${format(value)}x
-          </div>
-        `;
-      })
-      .join("");
+    results.textContent =
+      "Analyse terminée : " +
+      rounds.length +
+      " manches analysées.";
   }
-
-  display(
-    "interpretation",
-    stats.meanDifference === null
-      ? "Pas assez de données pour comparer deux fenêtres."
-      : "La moyenne des 20 dernières manches est " +
-        (stats.meanDifference > 0
-          ? "supérieure"
-          : stats.meanDifference < 0
-            ? "inférieure"
-            : "identique") +
-        " à celle des 20 précédentes. Cela ne prouve pas un changement de probabilité."
-  );
-
-  const interval = stats.lowInterval;
-
-  display(
-    "diagnostic",
-    `Échantillon : ${stats.sampleSize} manches. ` +
-    `Sous 2x : ${stats.under2.toFixed(1)}%. ` +
-    `IC 95% : ${interval[0].toFixed(1)}% à ${interval[1].toFixed(1)}%. ` +
-    `Corrélation : ${stats.correlation.toFixed(3)}. ` +
-    `Test des séquences Z : ${stats.runs.z.toFixed(2)}. ` +
-    `Plus longue série sous 2x : ${stats.longestLowStreak}. ` +
-    `Ces indicateurs décrivent l'historique et ne garantissent pas le prochain résultat.`
-  );
 }
 
 /* =========================================
-   ANALYSE EN DIRECT
+   AFFICHAGE DU SIGNAL COMBINÉ
+========================================= */
+
+function renderPrediction(stats, timing) {
+  let panel = $("predictionPanel");
+
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "predictionPanel";
+
+    panel.style.cssText = `
+      margin-top: 20px;
+      padding: 20px;
+      border: 1px solid rgba(100,150,255,.35);
+      border-radius: 14px;
+      background: rgba(20,35,65,.35);
+      color: inherit;
+      width: 100%;
+      box-sizing: border-box;
+    `;
+
+    const anchor = $("diagnostic");
+
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(panel, anchor);
+    } else {
+      document.body.appendChild(panel);
+    }
+  }
+
+  panel.innerHTML = `
+    <h2 style="margin-top:0">
+      SIGNAL COMBINÉ — LUCKY JET
+    </h2>
+
+    <div style="
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+      gap:14px;
+    ">
+
+      <div>
+        <small>COEFFICIENT CENTRAL INDICATIF</small>
+        <div style="font-size:28px;font-weight:bold">
+          ${formatMultiplier(stats.recentMedian)}
+        </div>
+      </div>
+
+      <div>
+        <small>FOURCHETTE STATISTIQUE</small>
+        <div style="font-size:22px;font-weight:bold">
+          ${formatMultiplier(stats.q25)}
+          –
+          ${formatMultiplier(stats.q75)}
+        </div>
+      </div>
+
+      <div>
+        <small>HEURE ESTIMÉE</small>
+        <div id="estimatedTime"
+          style="font-size:28px;font-weight:bold">
+          --:--:--
+        </div>
+      </div>
+
+      <div>
+        <small>TEMPS RESTANT ESTIMÉ</small>
+        <div id="countdown"
+          style="font-size:24px;font-weight:bold">
+          Calcul...
+        </div>
+      </div>
+    </div>
+
+    <hr style="opacity:.2;margin:18px 0">
+
+    <h3>INDICATEURS HISTORIQUES</h3>
+
+    <p>
+      Fréquence sous 2x :
+      <strong>${formatNumber(stats.recentUnder2, 1)}%</strong>
+    </p>
+
+    <p>
+      Fréquence à partir de 5x :
+      <strong>${formatNumber(stats.recentOver5, 1)}%</strong>
+    </p>
+
+    <p>
+      Intervalle médian entre les manches :
+      <strong>${formatNumber(timing.typicalInterval, 1)} secondes</strong>
+    </p>
+
+    <p id="combinedStatus" style="font-weight:bold">
+      Analyse temporelle et statistique effectuée.
+    </p>
+
+    <p style="font-size:12px;opacity:.7">
+      Estimation descriptive basée sur l'historique.
+      Elle ne prédit pas de manière fiable le prochain
+      coefficient ni un moment favorable pour miser.
+      Les manches d'un jeu aléatoire restent imprévisibles.
+    </p>
+  `;
+
+  nextEstimatedTime = timing.estimatedTime;
+
+  updateCountdown();
+}
+
+/* =========================================
+   COMPTE À REBOURS
+========================================= */
+
+function updateCountdown() {
+  if (!nextEstimatedTime) return;
+
+  const timeElement = $("estimatedTime");
+  const countdownElement = $("countdown");
+  const statusElement = $("combinedStatus");
+
+  const estimatedDate = new Date(nextEstimatedTime);
+
+  if (timeElement) {
+    timeElement.textContent =
+      estimatedDate.toLocaleTimeString("fr-FR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+  }
+
+  const remaining =
+    Math.floor((nextEstimatedTime - Date.now()) / 1000);
+
+  if (remaining <= 0) {
+    if (countdownElement) {
+      countdownElement.textContent = "Estimation dépassée";
+    }
+
+    if (statusElement) {
+      statusElement.textContent =
+        "Actualise les données pour recalculer l'estimation temporelle.";
+    }
+
+    return;
+  }
+
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const seconds = remaining % 60;
+
+  const formatted = [
+    hours,
+    minutes,
+    seconds
+  ].map(value => String(value).padStart(2, "0")).join(":");
+
+  if (countdownElement) {
+    countdownElement.textContent = formatted;
+  }
+
+  if (statusElement) {
+    statusElement.textContent =
+      "Heure théorique calculée à partir des intervalles historiques.";
+  }
+}
+
+/* =========================================
+   AFFICHAGE DU DIRECT
+========================================= */
+
+function displayLive(data) {
+  const game = getLiveGame(data);
+
+  if (!game || !game.latest) {
+    throw new Error("Données du direct indisponibles.");
+  }
+
+  const liveElement = $("live");
+
+  if (liveElement) {
+    liveElement.textContent =
+      formatMultiplier(Number(game.latest.multiplier));
+  }
+
+  const feed = $("status");
+
+  if (feed) {
+    feed.textContent = game.stale
+      ? "DONNÉES POTENTIELLEMENT ANCIENNES"
+      : "CONNEXION API : EN DIRECT";
+  }
+}
+
+/* =========================================
+   DIAGNOSTIC
+========================================= */
+
+function displayDiagnostic(stats, timing) {
+  const diagnostic = $("diagnostic");
+
+  if (!diagnostic) return;
+
+  diagnostic.textContent =
+    "Échantillon : " + stats.values.length +
+    " manches. Médiane historique : " +
+    formatMultiplier(stats.median100) +
+    ". Fréquence sous 2x : " +
+    formatNumber(stats.under2, 1) +
+    "%. Intervalle médian : " +
+    formatNumber(timing.typicalInterval, 1) +
+    " secondes. Ces données décrivent l'historique et ne démontrent pas un pouvoir prédictif.";
+}
+
+/* =========================================
+   ANALYSE PRINCIPALE
 ========================================= */
 
 async function runAnalysis() {
-  if (analysisInProgress) return;
-
-  analysisInProgress = true;
-
   const button = $("analyze");
 
   if (button) {
@@ -488,73 +551,52 @@ async function runAnalysis() {
     button.textContent = "ANALYSE EN COURS...";
   }
 
-  setStatus("Connexion au serveur Render...");
+  const status = $("status");
+
+  if (status) {
+    status.textContent = "Récupération des données...";
+  }
 
   try {
-    const [live, history] = await Promise.all([
-      apiRequest("/api/live"),
-      apiRequest("/api/history")
+    const [liveData, historyData] = await Promise.all([
+      request("/api/live"),
+      request("/api/history")
     ]);
 
-    if (!history.rounds || !Array.isArray(history.rounds)) {
+    const rounds = normalizeHistory(historyData);
+
+    if (rounds.length < CONFIG.RECENT_WINDOW) {
       throw new Error(
-        "Format de l'historique incorrect."
+        "Historique insuffisant : 20 manches minimum nécessaires."
       );
     }
 
-    const rounds = normalizeRounds(history);
+    const stats = analyseStatistics(rounds);
+    const timing = analyseTiming(rounds);
 
-    if (!rounds.length) {
-      throw new Error(
-        "Aucun coefficient reçu dans l'historique."
-      );
+    displayLive(liveData);
+    displayStatistics(stats, rounds);
+    renderPrediction(stats, timing);
+    displayDiagnostic(stats, timing);
+
+    if (status) {
+      status.textContent = "ANALYSE TERMINÉE";
     }
-
-    const game = Array.isArray(live.games)
-      ? live.games.find(
-          item => item.game_id === CONFIG.GAME_ID
-        )
-      : null;
-
-    if (game) {
-      const multiplier = game.latest?.multiplier;
-
-      display(
-        "live",
-        multiplier !== undefined
-          ? format(multiplier) + "x"
-          : "—"
-      );
-
-      display(
-        "feed",
-        game.stale
-          ? "DONNÉES ANCIENNES"
-          : "EN DIRECT"
-      );
-    } else {
-      display("live", "—");
-      display("feed", "FLUX INDISPONIBLE");
-    }
-
-    const stats = calculateAnalysis(rounds);
-
-    displayResults(stats);
-
-    setStatus(
-      `Analyse terminée : ${stats.sampleSize} manches analysées.`
-    );
 
   } catch (error) {
-    console.error("[AI CRASH BOT]", error);
+    console.error("Erreur AI CRASH BOT :", error);
 
-    reportError(
-      error.message || "Une erreur inconnue est survenue."
-    );
+    if (status) {
+      status.textContent = "ERREUR : " + error.message;
+    }
+
+    const results = $("results");
+
+    if (results) {
+      results.textContent = error.message;
+    }
 
   } finally {
-    analysisInProgress = false;
-
     if (button) {
       button.disabled = false;
       button.textContent = "LANCER L'ANALYSE";
@@ -569,22 +611,29 @@ async function runAnalysis() {
 function initializeBot() {
   const button = $("analyze");
 
-  if (!button) {
-    reportError(
-      'Bouton introuvable : id="analyze".'
-    );
-    return;
+  if (button) {
+    button.addEventListener("click", runAnalysis);
   }
 
-  button.addEventListener("click", runAnalysis);
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+  }
 
-  setStatus(
-    "Application chargée. Serveur Render prêt."
+  countdownTimer = setInterval(
+    updateCountdown,
+    CONFIG.COUNTDOWN_INTERVAL
   );
 
-  console.log(
-    "AI CRASH SIGNAL BOT : initialisation réussie."
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+  }
+
+  refreshTimer = setInterval(
+    runAnalysis,
+    CONFIG.REFRESH_INTERVAL
   );
+
+  runAnalysis();
 }
 
 if (document.readyState === "loading") {
