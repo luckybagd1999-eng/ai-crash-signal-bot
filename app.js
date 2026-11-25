@@ -3,24 +3,25 @@
 
 /* =========================================
    AI CRASH SIGNAL BOT — LUCKY JET
-   Affichage minimal : 4 indicateurs
+   Signal minimal + délai de préparation
 ========================================= */
 
 const CONFIG = {
   API: "https://ai-crash-signal-bot.onrender.com",
   HISTORY_LIMIT: 100,
   RECENT_WINDOW: 20,
-  REFRESH_MS: 60000
+  REFRESH_MS: 60000,
+  MIN_PREPARATION_SECONDS: 60
 };
 
 const $ = id => document.getElementById(id);
 
 let nextEstimatedTime = null;
 let countdownTimer = null;
+let refreshTimer = null;
+let analysing = false;
 
 function median(values) {
-  if (!values.length) return 0;
-
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
 
@@ -47,18 +48,13 @@ function showError(message) {
   $("coefficient").textContent = "Indisponible";
   $("range").textContent = "--";
   $("estimatedTime").textContent = "--:--:--";
-  $("countdown").textContent = "Erreur API";
-  $("countdown").classList.add("error");
-
+  $("countdown").textContent = "Actualisation...";
   console.error("AI CRASH BOT :", message);
 }
 
 async function getData(endpoint) {
   const response = await fetch(CONFIG.API + endpoint, {
-    method: "GET",
-    headers: {
-      "Accept": "application/json"
-    },
+    headers: { "Accept": "application/json" },
     cache: "no-store"
   });
 
@@ -70,12 +66,12 @@ async function getData(endpoint) {
 }
 
 /* =========================================
-   RÉCUPÉRATION DE L'HISTORIQUE
+   HISTORIQUE
 ========================================= */
 
 function normalizeRounds(data) {
   if (!Array.isArray(data.rounds)) {
-    throw new Error("Historique non disponible.");
+    throw new Error("Historique indisponible.");
   }
 
   return data.rounds
@@ -102,7 +98,7 @@ function analyseCoefficient(rounds) {
     .map(round => round.multiplier);
 
   if (recent.length < CONFIG.RECENT_WINDOW) {
-    throw new Error("20 manches récentes nécessaires.");
+    throw new Error("20 manches nécessaires.");
   }
 
   return {
@@ -113,7 +109,7 @@ function analyseCoefficient(rounds) {
 }
 
 /* =========================================
-   ANALYSE DES INTERVALLES TEMPORELS
+   ANALYSE TEMPORELLE
 ========================================= */
 
 function analyseTime(rounds) {
@@ -129,34 +125,35 @@ function analyseTime(rounds) {
   }
 
   if (intervals.length < 5) {
-    throw new Error("Intervalles temporels insuffisants.");
+    throw new Error("Données temporelles insuffisantes.");
   }
 
-  const recentIntervals = intervals.slice(-20);
-  const typicalInterval = median(recentIntervals);
+  const typicalInterval = median(intervals.slice(-20));
 
   const latestTimestamp =
     rounds[rounds.length - 1].timestamp;
 
+  const minimumTime =
+    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000;
+
   /*
     Projection du prochain créneau théorique.
-    Ce calcul extrapole les intervalles observés ;
-    il ne connaît pas l'heure réelle de la prochaine manche.
+    On conserve les intervalles historiques,
+    mais on impose un minimum de 60 secondes
+    à partir de la publication du signal.
   */
 
-  const now = Date.now();
-  const elapsed = Math.max(0, now - latestTimestamp);
+  let estimatedTime = latestTimestamp + typicalInterval * 1000;
 
-  const periodsPassed = Math.floor(
-    elapsed / (typicalInterval * 1000)
-  );
+  while (estimatedTime < minimumTime) {
+    estimatedTime += typicalInterval * 1000;
+  }
 
-  return latestTimestamp +
-    (periodsPassed + 1) * typicalInterval * 1000;
+  return estimatedTime;
 }
 
 /* =========================================
-   AFFICHAGE DES 4 INDICATEURS
+   AFFICHAGE DU SIGNAL
 ========================================= */
 
 function displaySignal(coefficient, estimatedTime) {
@@ -170,8 +167,6 @@ function displaySignal(coefficient, estimatedTime) {
 
   nextEstimatedTime = estimatedTime;
 
-  $("countdown").classList.remove("error");
-
   updateCountdown();
 }
 
@@ -182,10 +177,8 @@ function displaySignal(coefficient, estimatedTime) {
 function updateCountdown() {
   if (!nextEstimatedTime) return;
 
-  const date = new Date(nextEstimatedTime);
-
   $("estimatedTime").textContent =
-    date.toLocaleTimeString("fr-FR", {
+    new Date(nextEstimatedTime).toLocaleTimeString("fr-FR", {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -209,16 +202,12 @@ function updateCountdown() {
     hours,
     minutes,
     seconds
-  ]
-    .map(value => String(value).padStart(2, "0"))
-    .join(":");
+  ].map(value => String(value).padStart(2, "0")).join(":");
 }
 
 /* =========================================
    ANALYSE PRINCIPALE
 ========================================= */
-
-let analysing = false;
 
 async function runAnalysis() {
   if (analysing) return;
@@ -227,7 +216,6 @@ async function runAnalysis() {
 
   try {
     const history = await getData("/api/history");
-
     const rounds = normalizeRounds(history);
 
     if (rounds.length < CONFIG.RECENT_WINDOW) {
@@ -254,26 +242,15 @@ async function runAnalysis() {
 function initialize() {
   runAnalysis();
 
-  if (countdownTimer) {
-    clearInterval(countdownTimer);
-  }
+  if (countdownTimer) clearInterval(countdownTimer);
+  if (refreshTimer) clearInterval(refreshTimer);
 
-  countdownTimer = setInterval(
-    updateCountdown,
-    1000
-  );
-
-  setInterval(
-    runAnalysis,
-    CONFIG.REFRESH_MS
-  );
+  countdownTimer = setInterval(updateCountdown, 1000);
+  refreshTimer = setInterval(runAnalysis, CONFIG.REFRESH_MS);
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener(
-    "DOMContentLoaded",
-    initialize
-  );
+  document.addEventListener("DOMContentLoaded", initialize);
 } else {
   initialize();
-}
+         }
