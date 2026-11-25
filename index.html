@@ -3,8 +3,8 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d18">
   <title>AI CRASH SIGNAL BOT</title>
 
   <style>
@@ -14,302 +14,150 @@
 
     body {
       margin: 0;
-      background: #080d18;
-      color: #e8efff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background:
+        radial-gradient(circle at top, #17294b 0%, #080d18 55%);
+      color: #f4f7ff;
       font-family: Arial, sans-serif;
     }
 
-    main {
-      max-width: 1000px;
-      margin: auto;
-      padding: 22px;
-    }
-
-    header {
-      padding: 20px 0;
-      border-bottom: 1px solid #26334b;
+    .dashboard {
+      width: 100%;
+      max-width: 540px;
+      padding: 26px;
+      border: 1px solid #263b60;
+      border-radius: 20px;
+      background: rgba(12, 21, 39, 0.96);
+      box-shadow: 0 20px 70px rgba(0, 0, 0, 0.4);
     }
 
     h1 {
-      font-size: 24px;
-      color: #55d6ff;
-      margin: 0;
+      margin: 0 0 8px;
+      text-align: center;
+      font-size: 21px;
+      letter-spacing: 1.5px;
     }
 
-    h2 {
-      font-size: 15px;
-      color: #55d6ff;
-      margin: 0 0 14px;
-    }
-
-    .sub {
-      color: #8293b2;
+    .subtitle {
+      margin-bottom: 28px;
+      color: #91a6c9;
+      text-align: center;
       font-size: 12px;
-      margin-top: 8px;
+      letter-spacing: 1px;
     }
 
-    .panel {
-      background: #111b2d;
-      border: 1px solid #263650;
-      border-radius: 12px;
-      padding: 17px;
-      margin-top: 17px;
-    }
-
-    input, button {
-      padding: 12px;
-      border-radius: 7px;
-      border: 1px solid #34445f;
-      background: #0b1424;
-      color: white;
-    }
-
-    input {
-      width: 100%;
-      margin: 6px 0 10px;
-    }
-
-    button {
-      background: #087fae;
-      border: 0;
-      font-weight: bold;
-      cursor: pointer;
-      width: 100%;
-    }
-
-    button:disabled {
-      opacity: .5;
-      cursor: wait;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 10px;
+    .section-title {
+      margin-bottom: 22px;
+      color: #7db6ff;
+      text-align: center;
+      font-size: 15px;
+      letter-spacing: 1.3px;
     }
 
     .metric {
-      background: #0b1424;
-      padding: 14px;
-      border-radius: 8px;
-    }
-
-    .metric small {
-      display: block;
-      color: #8da0c0;
-      margin-bottom: 8px;
-    }
-
-    .metric strong {
-      font-size: 21px;
-    }
-
-    .green {
-      color: #4de0a0;
-    }
-
-    .red {
-      color: #ff6b80;
-    }
-
-    .blue {
-      color: #55d6ff;
-    }
-
-    .muted {
-      color: #91a1bc;
-      font-size: 12px;
-      line-height: 1.6;
-    }
-
-    #status {
-      color: #f5c66a;
-      font-size: 13px;
-      margin-top: 12px;
-      line-height: 1.5;
-    }
-
-    #results {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 7px;
-    }
-
-    .result {
-      background: #0b1424;
-      border-radius: 7px;
-      padding: 10px;
+      margin-bottom: 15px;
+      padding: 18px;
+      border: 1px solid #253a5c;
+      border-radius: 13px;
+      background: #101d33;
       text-align: center;
     }
 
-    @media(max-width: 600px) {
-      main {
-        padding: 13px;
-      }
+    .metric-label {
+      margin-bottom: 10px;
+      color: #91a6c9;
+      font-size: 11px;
+      letter-spacing: 1px;
+    }
 
-      .grid {
-        grid-template-columns: 1fr 1fr;
-      }
+    .metric-value {
+      color: #ffffff;
+      font-size: clamp(27px, 7vw, 36px);
+      font-weight: bold;
+      font-variant-numeric: tabular-nums;
+    }
 
-      #results {
-        grid-template-columns: repeat(3, 1fr);
-      }
+    #coefficient {
+      color: #45e0a0;
+    }
 
-      h1 {
-        font-size: 21px;
-      }
+    #countdown {
+      color: #7db6ff;
+    }
+
+    .disclaimer {
+      margin: 20px 0 0;
+      color: #71839f;
+      text-align: center;
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .error {
+      color: #ff8b8b;
+      font-size: 15px;
     }
   </style>
+
+  <script src="./app.js?v=10" defer></script>
 </head>
 
 <body>
+  <main class="dashboard">
 
-<main>
-
-  <header>
     <h1>AI CRASH SIGNAL BOT</h1>
-    <div class="sub">
-      LUCKY JET · ANALYSE STATISTIQUE · GAME DATA 365
-    </div>
-  </header>
+    <div class="subtitle">LUCKY JET · SIGNAL STATISTIQUE</div>
 
-  <!-- CONNEXION API -->
-  <section class="panel">
-    <h2>CONNEXION API</h2>
-
-    <input
-      id="apiKey"
-      type="password"
-      placeholder="Saisis ta clé API GameData365"
-      autocomplete="off"
-    >
-
-    <button id="analyze" type="button">
-      LANCER L'ANALYSE
-    </button>
-
-    <div id="status">
-      Initialisation de l'application...
-    </div>
-  </section>
-
-  <!-- DONNÉES EN DIRECT -->
-  <section class="panel">
-    <h2>DONNÉES EN DIRECT</h2>
-
-    <div class="grid">
-
-      <div class="metric">
-        <small>DERNIER COEFFICIENT</small>
-        <strong id="live">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>ÉTAT DU FLUX</small>
-        <strong id="feed">—</strong>
-      </div>
-
-    </div>
-  </section>
-
-  <!-- INDICATEURS -->
-  <section class="panel">
-    <h2>INDICATEURS STATISTIQUES</h2>
-
-    <div class="grid">
-
-      <div class="metric">
-        <small>MANCHES ANALYSÉES</small>
-        <strong id="count">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>MOYENNE (100)</small>
-        <strong id="mean">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>MÉDIANE (100)</small>
-        <strong id="median">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>VOLATILITÉ (100)</small>
-        <strong id="volatility">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>FRÉQUENCE SOUS 2x</small>
-        <strong id="under2">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>FRÉQUENCE À PARTIR DE 5x</small>
-        <strong id="over5">—</strong>
-      </div>
-
-    </div>
-  </section>
-
-  <!-- ANALYSE RÉCENTE -->
-  <section class="panel">
-    <h2>ANALYSE DES 20 DERNIÈRES MANCHES</h2>
-
-    <div class="grid">
-
-      <div class="metric">
-        <small>MOYENNE RÉCENTE</small>
-        <strong id="recentMean">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>FRÉQUENCE SOUS 2x</small>
-        <strong id="recentLow">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>FRÉQUENCE À PARTIR DE 5x</small>
-        <strong id="recentHigh">—</strong>
-      </div>
-
-      <div class="metric">
-        <small>ÉCART AVEC LES 20 PRÉCÉDENTES</small>
-        <strong id="difference">—</strong>
-      </div>
-
+    <div class="section-title">
+      SIGNAL COMBINÉ — LUCKY JET
     </div>
 
-    <p id="interpretation" class="muted">
-      Les résultats apparaîtront après l'analyse.
-    </p>
-  </section>
+    <div class="metric">
+      <div class="metric-label">
+        COEFFICIENT CENTRAL INDICATIF
+      </div>
+      <div class="metric-value" id="coefficient">
+        Analyse...
+      </div>
+    </div>
 
-  <!-- HISTORIQUE RÉCENT -->
-  <section class="panel">
-    <h2>20 DERNIERS COEFFICIENTS</h2>
+    <div class="metric">
+      <div class="metric-label">
+        FOURCHETTE STATISTIQUE
+      </div>
+      <div class="metric-value" id="range">
+        Analyse...
+      </div>
+    </div>
 
-    <div id="results"></div>
-  </section>
+    <div class="metric">
+      <div class="metric-label">
+        HEURE ESTIMÉE
+      </div>
+      <div class="metric-value" id="estimatedTime">
+        --:--:--
+      </div>
+    </div>
 
-  <!-- DIAGNOSTIC -->
-  <section class="panel">
-    <h2>DIAGNOSTIC DU MODÈLE</h2>
+    <div class="metric">
+      <div class="metric-label">
+        TEMPS RESTANT ESTIMÉ
+      </div>
+      <div class="metric-value" id="countdown">
+        Calcul...
+      </div>
+    </div>
 
-    <p id="diagnostic" class="muted">
-      En attente des données.
+    <p class="disclaimer">
+      Estimations statistiques basées sur l'historique.
+      Elles ne garantissent ni le prochain coefficient
+      ni un moment favorable pour miser.
     </p>
 
-    <p class="muted">
-      Les statistiques historiques ne permettent pas de connaître
-      avec certitude le prochain résultat d'un jeu Crash.
-      Aucun signal ne garantit un gain.
-    </p>
-  </section>
-
-</main>
-
-<!-- CHARGEMENT DU FICHIER JAVASCRIPT EXTERNE -->
-<script src="./app.js?v=4" defer></script>
-
+  </main>
 </body>
 </html>
