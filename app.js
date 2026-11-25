@@ -13,8 +13,7 @@ const CONFIG = {
   API_BASE: "https://api.gamedata365.com",
   GAME_ID: "lucky_jet",
   HISTORY_LIMIT: 100,
-  RECENT_WINDOW: 20,
-  REFRESH_INTERVAL: 60000
+  RECENT_WINDOW: 20
 };
 
 const $ = id => document.getElementById(id);
@@ -22,12 +21,43 @@ const $ = id => document.getElementById(id);
 let analysisInProgress = false;
 
 /* =========================================
+   AFFICHAGE ET DIAGNOSTIC
+========================================= */
+
+function display(id, value) {
+  const element = $(id);
+  if (element) element.textContent = value;
+}
+
+function setStatus(message) {
+  display("status", message);
+}
+
+function reportError(message) {
+  console.error("[AI CRASH BOT]", message);
+  setStatus("Erreur : " + message);
+}
+
+/* Détecte les erreurs JavaScript */
+window.addEventListener("error", event => {
+  reportError("Erreur JavaScript : " + event.message);
+});
+
+window.addEventListener("unhandledrejection", event => {
+  const reason = event.reason;
+  reportError(
+    "Erreur inattendue : " +
+    (reason?.message || String(reason))
+  );
+});
+
+/* =========================================
    OUTILS MATHÉMATIQUES
 ========================================= */
 
 function average(values) {
   if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
 function median(values) {
@@ -47,7 +77,7 @@ function variance(values) {
   const mean = average(values);
 
   return average(
-    values.map(value => Math.pow(value - mean, 2))
+    values.map(x => Math.pow(x - mean, 2))
   );
 }
 
@@ -58,7 +88,9 @@ function standardDeviation(values) {
 function percentage(condition, values) {
   if (!values.length) return 0;
 
-  return 100 * values.filter(condition).length / values.length;
+  return 100 *
+    values.filter(condition).length /
+    values.length;
 }
 
 function quantile(values, q) {
@@ -72,7 +104,8 @@ function quantile(values, q) {
   if (lower === upper) return sorted[lower];
 
   return sorted[lower] +
-    (sorted[upper] - sorted[lower]) * (position - lower);
+    (sorted[upper] - sorted[lower]) *
+    (position - lower);
 }
 
 function wilsonInterval(successes, total) {
@@ -98,7 +131,7 @@ function wilsonInterval(successes, total) {
 }
 
 /* =========================================
-   CORRÉLATION
+   CORRÉLATION SUCCESSIVE
 ========================================= */
 
 function correlation(values) {
@@ -150,7 +183,7 @@ function runsTest(values) {
     return { runs: 0, z: 0 };
   }
 
-  const binary = values.map(value => value < 2 ? 1 : 0);
+  const binary = values.map(x => x < 2 ? 1 : 0);
 
   const n1 = binary.filter(x => x === 1).length;
   const n2 = binary.length - n1;
@@ -166,7 +199,6 @@ function runsTest(values) {
   }
 
   const n = n1 + n2;
-
   const expected = 1 + (2 * n1 * n2) / n;
 
   const standardError = Math.sqrt(
@@ -174,11 +206,12 @@ function runsTest(values) {
     (n * n * (n - 1))
   );
 
-  const z = standardError
-    ? (runs - expected) / standardError
-    : 0;
-
-  return { runs, z };
+  return {
+    runs,
+    z: standardError
+      ? (runs - expected) / standardError
+      : 0
+  };
 }
 
 /* =========================================
@@ -186,28 +219,51 @@ function runsTest(values) {
 ========================================= */
 
 async function apiRequest(endpoint, apiKey) {
-  const response = await fetch(
-    CONFIG.API_BASE + endpoint,
-    {
-      method: "GET",
-      headers: {
-        "X-API-Key": apiKey,
-        "Accept": "application/json"
-      }
-    }
-  );
+  let response;
 
-  if (!response.ok) {
+  try {
+    response = await fetch(
+      CONFIG.API_BASE + endpoint,
+      {
+        method: "GET",
+        headers: {
+          "X-API-Key": apiKey,
+          "Accept": "application/json"
+        }
+      }
+    );
+  } catch (error) {
     throw new Error(
-      "Erreur API HTTP " + response.status
+      "Connexion impossible à GameData365. " +
+      "Vérifie le réseau et les autorisations CORS de l'API."
     );
   }
 
-  const data = await response.json();
+  if (!response.ok) {
+    let details = "";
+
+    try {
+      const body = await response.json();
+      details = body.message || body.error || "";
+    } catch (_) {}
+
+    throw new Error(
+      "Erreur HTTP " + response.status +
+      (details ? " : " + details : "")
+    );
+  }
+
+  let data;
+
+  try {
+    data = await response.json();
+  } catch (_) {
+    throw new Error("La réponse de l'API n'est pas un JSON valide.");
+  }
 
   if (data.status === "error") {
     throw new Error(
-      data.message || data.error || "Erreur GameData365"
+      data.message || data.error || "Erreur GameData365."
     );
   }
 
@@ -219,67 +275,65 @@ async function apiRequest(endpoint, apiKey) {
 ========================================= */
 
 function normalizeRounds(history) {
-  const rounds = Array.isArray(history.rounds)
-    ? history.rounds
-    : [];
+  let rounds = [];
+
+  if (Array.isArray(history.rounds)) {
+    rounds = history.rounds;
+  } else if (Array.isArray(history.data?.rounds)) {
+    rounds = history.data.rounds;
+  } else if (Array.isArray(history.results)) {
+    rounds = history.results;
+  } else if (Array.isArray(history.data)) {
+    rounds = history.data;
+  }
 
   return rounds
-    .filter(round =>
-      round &&
-      Number.isFinite(Number(round.multiplier)) &&
-      Number(round.multiplier) >= 1
-    )
+    .filter(round => {
+      const multiplier = Number(
+        round.multiplier ?? round.coefficient
+      );
+
+      return Number.isFinite(multiplier) && multiplier >= 1;
+    })
     .map(round => ({
-      id: round.round_id || null,
-      multiplier: Number(round.multiplier),
-      timestamp: round.timestamp || null
+      id: round.round_id || round.id || null,
+      multiplier: Number(
+        round.multiplier ?? round.coefficient
+      ),
+      timestamp:
+        round.timestamp ||
+        round.created_at ||
+        round.date ||
+        null
     }))
     .sort((a, b) => {
-      if (a.timestamp && b.timestamp) {
-        return new Date(b.timestamp) - new Date(a.timestamp);
-      }
+      if (!a.timestamp || !b.timestamp) return 0;
 
-      return 0;
+      return new Date(b.timestamp) - new Date(a.timestamp);
     });
 }
 
 /* =========================================
-   ANALYSE STATISTIQUE PRINCIPALE
+   ANALYSE STATISTIQUE
 ========================================= */
 
 function calculateAnalysis(rounds) {
-  const values = rounds.map(round => round.multiplier);
+  const values = rounds.map(x => x.multiplier);
 
   if (values.length < CONFIG.RECENT_WINDOW) {
     throw new Error(
-      "Historique insuffisant : minimum 20 manches nécessaires."
+      "Historique insuffisant : " +
+      values.length +
+      " manches reçues, 20 nécessaires."
     );
   }
 
-  const recent = values.slice(0, CONFIG.RECENT_WINDOW);
-
-  const previous = values.slice(
-    CONFIG.RECENT_WINDOW,
-    CONFIG.RECENT_WINDOW * 2
-  );
+  const recent = values.slice(0, 20);
+  const previous = values.slice(20, 40);
 
   const lowCount = values.filter(x => x < 2).length;
   const highCount = values.filter(x => x >= 5).length;
   const extremeCount = values.filter(x => x >= 10).length;
-
-  const recentLow = recent.filter(x => x < 2).length;
-  const recentHigh = recent.filter(x => x >= 5).length;
-
-  const interval = wilsonInterval(
-    lowCount,
-    values.length
-  );
-
-  const comparison = previous.length
-    ? average(recent) - average(previous)
-    : null;
-
-  const runs = runsTest(values);
 
   return {
     sampleSize: values.length,
@@ -302,7 +356,10 @@ function calculateAnalysis(rounds) {
     highCount,
     extremeCount,
 
-    lowInterval: interval,
+    lowInterval: wilsonInterval(
+      lowCount,
+      values.length
+    ),
 
     recentMean: average(recent),
     recentMedian: median(recent),
@@ -313,7 +370,9 @@ function calculateAnalysis(rounds) {
       ? average(previous)
       : null,
 
-    meanDifference: comparison,
+    meanDifference: previous.length
+      ? average(recent) - average(previous)
+      : null,
 
     correlation: correlation(values),
 
@@ -327,22 +386,14 @@ function calculateAnalysis(rounds) {
       x => x >= 5
     ),
 
-    runs,
+    runs: runsTest(values),
     recentValues: recent
   };
 }
 
 /* =========================================
-   AFFICHAGE
+   AFFICHAGE DES RÉSULTATS
 ========================================= */
-
-function display(id, value) {
-  const element = $(id);
-
-  if (element) {
-    element.textContent = value;
-  }
-}
 
 function format(value) {
   return Number(value).toFixed(2);
@@ -350,39 +401,16 @@ function format(value) {
 
 function displayResults(stats) {
   display("count", stats.sampleSize);
-
   display("mean", format(stats.mean) + "x");
   display("median", format(stats.median) + "x");
+  display("volatility", format(stats.deviation));
 
-  display(
-    "volatility",
-    format(stats.deviation)
-  );
+  display("under2", stats.under2.toFixed(1) + "%");
+  display("over5", stats.over5.toFixed(1) + "%");
 
-  display(
-    "under2",
-    stats.under2.toFixed(1) + "%"
-  );
-
-  display(
-    "over5",
-    stats.over5.toFixed(1) + "%"
-  );
-
-  display(
-    "recentMean",
-    format(stats.recentMean) + "x"
-  );
-
-  display(
-    "recentLow",
-    stats.recentLow.toFixed(1) + "%"
-  );
-
-  display(
-    "recentHigh",
-    stats.recentHigh.toFixed(1) + "%"
-  );
+  display("recentMean", format(stats.recentMean) + "x");
+  display("recentLow", stats.recentLow.toFixed(1) + "%");
+  display("recentHigh", stats.recentHigh.toFixed(1) + "%");
 
   display(
     "difference",
@@ -426,47 +454,12 @@ function displayResults(stats) {
   display(
     "diagnostic",
     `Échantillon : ${stats.sampleSize} manches. ` +
-    `Fréquence sous 2x : ${stats.under2.toFixed(1)}%. ` +
-    `Intervalle de confiance à 95% : ${interval[0].toFixed(1)}% à ${interval[1].toFixed(1)}%. ` +
-    `Corrélation successive : ${stats.correlation.toFixed(3)}. ` +
-    `Test des séquences : Z = ${stats.runs.z.toFixed(2)}. ` +
+    `Sous 2x : ${stats.under2.toFixed(1)}%. ` +
+    `IC 95% : ${interval[0].toFixed(1)}% à ${interval[1].toFixed(1)}%. ` +
+    `Corrélation : ${stats.correlation.toFixed(3)}. ` +
+    `Test des séquences Z : ${stats.runs.z.toFixed(2)}. ` +
     `Plus longue série sous 2x : ${stats.longestLowStreak}. ` +
-    `Ces indicateurs sont descriptifs et ne garantissent aucune prédiction.`
-  );
-}
-
-/* =========================================
-   RÉCUPÉRATION DES DONNÉES LIVE
-========================================= */
-
-async function loadLive(apiKey) {
-  const data = await apiRequest(
-    "/v1/crash/live",
-    apiKey
-  );
-
-  const game = (data.games || []).find(
-    item => item.game_id === CONFIG.GAME_ID
-  );
-
-  if (!game) {
-    display("feed", "JEU NON TROUVÉ");
-    display("live", "—");
-    return;
-  }
-
-  if (game.latest && game.latest.multiplier !== undefined) {
-    display(
-      "live",
-      format(game.latest.multiplier) + "x"
-    );
-  } else {
-    display("live", "—");
-  }
-
-  display(
-    "feed",
-    game.stale ? "DONNÉES ANCIENNES" : "EN DIRECT"
+    `Ces indicateurs décrivent l'historique et ne garantissent pas le prochain résultat.`
   );
 }
 
@@ -480,7 +473,7 @@ async function runAnalysis() {
   const key = $("apiKey")?.value.trim();
 
   if (!key) {
-    display("status", "Saisis ta clé API GameData365.");
+    setStatus("Saisis ta clé API GameData365.");
     return;
   }
 
@@ -490,32 +483,37 @@ async function runAnalysis() {
 
   if (button) button.disabled = true;
 
-  display("status", "Connexion à GameData365...");
+  setStatus("Connexion à GameData365...");
 
   try {
     const [live, history] = await Promise.all([
       apiRequest("/v1/crash/live", key),
+
       apiRequest(
-        `/v1/crash/history?game=${CONFIG.GAME_ID}&limit=${CONFIG.HISTORY_LIMIT}`,
+        `/v1/crash/history?game=${encodeURIComponent(CONFIG.GAME_ID)}&limit=${CONFIG.HISTORY_LIMIT}`,
         key
       )
     ]);
 
     const rounds = normalizeRounds(history);
 
-    if (rounds.length === 0) {
-      throw new Error("Aucune manche historique reçue.");
+    if (!rounds.length) {
+      throw new Error(
+        "Aucune manche trouvée dans la réponse historique. Vérifie le format retourné par l'API."
+      );
     }
 
-    const game = (live.games || []).find(
-      item => item.game_id === CONFIG.GAME_ID
-    );
+    const game = Array.isArray(live.games)
+      ? live.games.find(item => item.game_id === CONFIG.GAME_ID)
+      : null;
 
     if (game) {
+      const multiplier = game.latest?.multiplier;
+
       display(
         "live",
-        game.latest?.multiplier !== undefined
-          ? format(game.latest.multiplier) + "x"
+        multiplier !== undefined
+          ? format(multiplier) + "x"
           : "—"
       );
 
@@ -523,22 +521,25 @@ async function runAnalysis() {
         "feed",
         game.stale ? "DONNÉES ANCIENNES" : "EN DIRECT"
       );
+    } else {
+      display("live", "—");
+      display("feed", "DONNÉES REÇUES");
     }
 
     const stats = calculateAnalysis(rounds);
 
     displayResults(stats);
 
-    display(
-      "status",
-      `Analyse terminée : ${stats.sampleSize} manches reçues.`
+    setStatus(
+      `Analyse terminée : ${stats.sampleSize} manches analysées.`
     );
 
   } catch (error) {
-    display(
-      "status",
-      "Erreur : " + error.message +
-      ". Vérifie la clé API et les autorisations CORS."
+    console.error(error);
+
+    reportError(
+      error.message ||
+      "Une erreur inconnue est survenue."
     );
 
   } finally {
@@ -549,16 +550,36 @@ async function runAnalysis() {
 }
 
 /* =========================================
-   INITIALISATION
+   INITIALISATION ROBUSTE
 ========================================= */
 
-document.addEventListener("DOMContentLoaded", () => {
+function initializeBot() {
   const button = $("analyze");
+  const apiInput = $("apiKey");
 
-  if (button) {
-    button.addEventListener("click", runAnalysis);
+  if (!button) {
+    reportError(
+      "Bouton introuvable. Vérifie id=\"analyze\" dans index.html."
+    );
+    return;
   }
 
-  display("status", "En attente de connexion API.");
-});
-                     
+  if (!apiInput) {
+    reportError(
+      "Champ API introuvable. Vérifie id=\"apiKey\" dans index.html."
+    );
+    return;
+  }
+
+  button.addEventListener("click", runAnalysis);
+
+  setStatus("Application chargée. En attente de connexion API.");
+
+  console.log("AI CRASH SIGNAL BOT : initialisation réussie.");
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initializeBot);
+} else {
+  initializeBot();
+     }
