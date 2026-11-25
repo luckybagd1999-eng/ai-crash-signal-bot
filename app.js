@@ -4,13 +4,13 @@
 /* =========================================
    AI CRASH SIGNAL BOT
    Jeu : Lucky Jet
-   API : GameData365
+   API : GameData365 via Render
    Historique : 100 manches
    Analyse récente : 20 manches
 ========================================= */
 
 const CONFIG = {
-  API_BASE: "https://api.gamedata365.com",
+  API_BASE: "https://ai-crash-signal-bot.onrender.com",
   GAME_ID: "lucky_jet",
   HISTORY_LIMIT: 100,
   RECENT_WINDOW: 20
@@ -21,7 +21,7 @@ const $ = id => document.getElementById(id);
 let analysisInProgress = false;
 
 /* =========================================
-   AFFICHAGE ET DIAGNOSTIC
+   AFFICHAGE
 ========================================= */
 
 function display(id, value) {
@@ -38,18 +38,57 @@ function reportError(message) {
   setStatus("Erreur : " + message);
 }
 
-/* Détecte les erreurs JavaScript */
 window.addEventListener("error", event => {
   reportError("Erreur JavaScript : " + event.message);
 });
 
 window.addEventListener("unhandledrejection", event => {
-  const reason = event.reason;
   reportError(
     "Erreur inattendue : " +
-    (reason?.message || String(reason))
+    (event.reason?.message || String(event.reason))
   );
 });
+
+/* =========================================
+   CONNEXION RENDER
+========================================= */
+
+async function apiRequest(endpoint) {
+  let response;
+
+  try {
+    response = await fetch(CONFIG.API_BASE + endpoint, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json"
+      }
+    });
+  } catch (error) {
+    throw new Error(
+      "Impossible de joindre Render. Vérifie ta connexion."
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error("Erreur HTTP Render : " + response.status);
+  }
+
+  let data;
+
+  try {
+    data = await response.json();
+  } catch (error) {
+    throw new Error("Réponse JSON invalide du serveur.");
+  }
+
+  if (data.error || data.status === "error") {
+    throw new Error(
+      data.error || data.message || "Erreur API."
+    );
+  }
+
+  return data;
+}
 
 /* =========================================
    OUTILS MATHÉMATIQUES
@@ -57,7 +96,9 @@ window.addEventListener("unhandledrejection", event => {
 
 function average(values) {
   if (!values.length) return 0;
-  return values.reduce((a, b) => a + b, 0) / values.length;
+
+  return values.reduce((a, b) => a + b, 0) /
+    values.length;
 }
 
 function median(values) {
@@ -98,6 +139,7 @@ function quantile(values, q) {
 
   const sorted = [...values].sort((a, b) => a - b);
   const position = (sorted.length - 1) * q;
+
   const lower = Math.floor(position);
   const upper = Math.ceil(position);
 
@@ -159,7 +201,7 @@ function correlation(values) {
 }
 
 /* =========================================
-   SÉRIES ET SÉQUENCES
+   SÉRIES ET TEST STATISTIQUE
 ========================================= */
 
 function longestStreak(values, condition) {
@@ -188,7 +230,7 @@ function runsTest(values) {
   const n1 = binary.filter(x => x === 1).length;
   const n2 = binary.length - n1;
 
-  if (n1 === 0 || n2 === 0) {
+  if (!n1 || !n2) {
     return { runs: 1, z: 0 };
   }
 
@@ -215,62 +257,6 @@ function runsTest(values) {
 }
 
 /* =========================================
-   CONNEXION API
-========================================= */
-
-async function apiRequest(endpoint, apiKey) {
-  let response;
-
-  try {
-    response = await fetch(
-      CONFIG.API_BASE + endpoint,
-      {
-        method: "GET",
-        headers: {
-          "X-API-Key": apiKey,
-          "Accept": "application/json"
-        }
-      }
-    );
-  } catch (error) {
-    throw new Error(
-      "Connexion impossible à GameData365. " +
-      "Vérifie le réseau et les autorisations CORS de l'API."
-    );
-  }
-
-  if (!response.ok) {
-    let details = "";
-
-    try {
-      const body = await response.json();
-      details = body.message || body.error || "";
-    } catch (_) {}
-
-    throw new Error(
-      "Erreur HTTP " + response.status +
-      (details ? " : " + details : "")
-    );
-  }
-
-  let data;
-
-  try {
-    data = await response.json();
-  } catch (_) {
-    throw new Error("La réponse de l'API n'est pas un JSON valide.");
-  }
-
-  if (data.status === "error") {
-    throw new Error(
-      data.message || data.error || "Erreur GameData365."
-    );
-  }
-
-  return data;
-}
-
-/* =========================================
    NORMALISATION HISTORIQUE
 ========================================= */
 
@@ -288,13 +274,6 @@ function normalizeRounds(history) {
   }
 
   return rounds
-    .filter(round => {
-      const multiplier = Number(
-        round.multiplier ?? round.coefficient
-      );
-
-      return Number.isFinite(multiplier) && multiplier >= 1;
-    })
     .map(round => ({
       id: round.round_id || round.id || null,
       multiplier: Number(
@@ -306,11 +285,17 @@ function normalizeRounds(history) {
         round.date ||
         null
     }))
+    .filter(round =>
+      Number.isFinite(round.multiplier) &&
+      round.multiplier >= 1
+    )
     .sort((a, b) => {
       if (!a.timestamp || !b.timestamp) return 0;
 
-      return new Date(b.timestamp) - new Date(a.timestamp);
-    });
+      return new Date(b.timestamp) -
+        new Date(a.timestamp);
+    })
+    .slice(0, CONFIG.HISTORY_LIMIT);
 }
 
 /* =========================================
@@ -320,7 +305,7 @@ function normalizeRounds(history) {
 function calculateAnalysis(rounds) {
   const values = rounds.map(x => x.multiplier);
 
-  if (values.length < CONFIG.RECENT_WINDOW) {
+  if (values.length < 20) {
     throw new Error(
       "Historique insuffisant : " +
       values.length +
@@ -332,15 +317,12 @@ function calculateAnalysis(rounds) {
   const previous = values.slice(20, 40);
 
   const lowCount = values.filter(x => x < 2).length;
-  const highCount = values.filter(x => x >= 5).length;
-  const extremeCount = values.filter(x => x >= 10).length;
 
   return {
     sampleSize: values.length,
 
     mean: average(values),
     median: median(values),
-    variance: variance(values),
     deviation: standardDeviation(values),
 
     q25: quantile(values, 0.25),
@@ -352,10 +334,6 @@ function calculateAnalysis(rounds) {
     over5: percentage(x => x >= 5, values),
     over10: percentage(x => x >= 10, values),
 
-    lowCount,
-    highCount,
-    extremeCount,
-
     lowInterval: wilsonInterval(
       lowCount,
       values.length
@@ -363,6 +341,7 @@ function calculateAnalysis(rounds) {
 
     recentMean: average(recent),
     recentMedian: median(recent),
+
     recentLow: percentage(x => x < 2, recent),
     recentHigh: percentage(x => x >= 5, recent),
 
@@ -387,30 +366,58 @@ function calculateAnalysis(rounds) {
     ),
 
     runs: runsTest(values),
+
     recentValues: recent
   };
 }
 
 /* =========================================
-   AFFICHAGE DES RÉSULTATS
+   FORMATAGE
 ========================================= */
 
 function format(value) {
   return Number(value).toFixed(2);
 }
 
+/* =========================================
+   AFFICHAGE DES RÉSULTATS
+========================================= */
+
 function displayResults(stats) {
   display("count", stats.sampleSize);
+
   display("mean", format(stats.mean) + "x");
   display("median", format(stats.median) + "x");
-  display("volatility", format(stats.deviation));
 
-  display("under2", stats.under2.toFixed(1) + "%");
-  display("over5", stats.over5.toFixed(1) + "%");
+  display(
+    "volatility",
+    format(stats.deviation)
+  );
 
-  display("recentMean", format(stats.recentMean) + "x");
-  display("recentLow", stats.recentLow.toFixed(1) + "%");
-  display("recentHigh", stats.recentHigh.toFixed(1) + "%");
+  display(
+    "under2",
+    stats.under2.toFixed(1) + "%"
+  );
+
+  display(
+    "over5",
+    stats.over5.toFixed(1) + "%"
+  );
+
+  display(
+    "recentMean",
+    format(stats.recentMean) + "x"
+  );
+
+  display(
+    "recentLow",
+    stats.recentLow.toFixed(1) + "%"
+  );
+
+  display(
+    "recentHigh",
+    stats.recentHigh.toFixed(1) + "%"
+  );
 
   display(
     "difference",
@@ -423,17 +430,19 @@ function displayResults(stats) {
   const results = $("results");
 
   if (results) {
-    results.innerHTML = stats.recentValues.map(value => {
-      const color =
-        value < 2 ? "red" :
-        value >= 5 ? "green" : "blue";
+    results.innerHTML = stats.recentValues
+      .map(value => {
+        const color =
+          value < 2 ? "red" :
+          value >= 5 ? "green" : "blue";
 
-      return `
-        <div class="result ${color}">
-          ${format(value)}x
-        </div>
-      `;
-    }).join("");
+        return `
+          <div class="result ${color}">
+            ${format(value)}x
+          </div>
+        `;
+      })
+      .join("");
   }
 
   display(
@@ -464,47 +473,47 @@ function displayResults(stats) {
 }
 
 /* =========================================
-   ANALYSE COMPLÈTE
+   ANALYSE EN DIRECT
 ========================================= */
 
 async function runAnalysis() {
   if (analysisInProgress) return;
 
-  const key = $("apiKey")?.value.trim();
-
-  if (!key) {
-    setStatus("Saisis ta clé API GameData365.");
-    return;
-  }
-
   analysisInProgress = true;
 
   const button = $("analyze");
 
-  if (button) button.disabled = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "ANALYSE EN COURS...";
+  }
 
-  setStatus("Connexion à GameData365...");
+  setStatus("Connexion au serveur Render...");
 
   try {
     const [live, history] = await Promise.all([
-      apiRequest("/v1/crash/live", key),
-
-      apiRequest(
-        `/v1/crash/history?game=${encodeURIComponent(CONFIG.GAME_ID)}&limit=${CONFIG.HISTORY_LIMIT}`,
-        key
-      )
+      apiRequest("/api/live"),
+      apiRequest("/api/history")
     ]);
+
+    if (!history.rounds || !Array.isArray(history.rounds)) {
+      throw new Error(
+        "Format de l'historique incorrect."
+      );
+    }
 
     const rounds = normalizeRounds(history);
 
     if (!rounds.length) {
       throw new Error(
-        "Aucune manche trouvée dans la réponse historique. Vérifie le format retourné par l'API."
+        "Aucun coefficient reçu dans l'historique."
       );
     }
 
     const game = Array.isArray(live.games)
-      ? live.games.find(item => item.game_id === CONFIG.GAME_ID)
+      ? live.games.find(
+          item => item.game_id === CONFIG.GAME_ID
+        )
       : null;
 
     if (game) {
@@ -519,11 +528,13 @@ async function runAnalysis() {
 
       display(
         "feed",
-        game.stale ? "DONNÉES ANCIENNES" : "EN DIRECT"
+        game.stale
+          ? "DONNÉES ANCIENNES"
+          : "EN DIRECT"
       );
     } else {
       display("live", "—");
-      display("feed", "DONNÉES REÇUES");
+      display("feed", "FLUX INDISPONIBLE");
     }
 
     const stats = calculateAnalysis(rounds);
@@ -535,51 +546,52 @@ async function runAnalysis() {
     );
 
   } catch (error) {
-    console.error(error);
+    console.error("[AI CRASH BOT]", error);
 
     reportError(
-      error.message ||
-      "Une erreur inconnue est survenue."
+      error.message || "Une erreur inconnue est survenue."
     );
 
   } finally {
     analysisInProgress = false;
 
-    if (button) button.disabled = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "LANCER L'ANALYSE";
+    }
   }
 }
 
 /* =========================================
-   INITIALISATION ROBUSTE
+   INITIALISATION
 ========================================= */
 
 function initializeBot() {
   const button = $("analyze");
-  const apiInput = $("apiKey");
 
   if (!button) {
     reportError(
-      "Bouton introuvable. Vérifie id=\"analyze\" dans index.html."
-    );
-    return;
-  }
-
-  if (!apiInput) {
-    reportError(
-      "Champ API introuvable. Vérifie id=\"apiKey\" dans index.html."
+      'Bouton introuvable : id="analyze".'
     );
     return;
   }
 
   button.addEventListener("click", runAnalysis);
 
-  setStatus("Application chargée. En attente de connexion API.");
+  setStatus(
+    "Application chargée. Serveur Render prêt."
+  );
 
-  console.log("AI CRASH SIGNAL BOT : initialisation réussie.");
+  console.log(
+    "AI CRASH SIGNAL BOT : initialisation réussie."
+  );
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initializeBot);
+  document.addEventListener(
+    "DOMContentLoaded",
+    initializeBot
+  );
 } else {
   initializeBot();
-     }
+}
