@@ -1,0 +1,244 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI CRASH SIGNAL BOT</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d18;color:#e8efff;font-family:Arial,sans-serif}
+main{max-width:1000px;margin:auto;padding:22px}
+header{padding:20px 0;border-bottom:1px solid #26334b}
+h1{font-size:24px;color:#55d6ff;margin:0}
+.sub{color:#8293b2;font-size:12px;margin-top:8px}
+.panel{background:#111b2d;border:1px solid #263650;border-radius:12px;padding:17px;margin-top:17px}
+h2{font-size:15px;color:#55d6ff;margin:0 0 14px}
+input,button{padding:12px;border-radius:7px;border:1px solid #34445f;background:#0b1424;color:white}
+input{width:100%;margin:6px 0 10px}
+button{background:#087fae;border:0;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.5}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.metric{background:#0b1424;padding:14px;border-radius:8px}
+.metric small{display:block;color:#8da0c0;margin-bottom:8px}
+.metric strong{font-size:21px}
+.green{color:#4de0a0}.red{color:#ff6b80}.blue{color:#55d6ff}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:9px;border-bottom:1px solid #263650}
+.muted{color:#91a1bc;font-size:12px}
+#status{color:#f5c66a;font-size:13px;margin-top:10px}
+#results{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
+.result{background:#0b1424;border-radius:7px;padding:10px;text-align:center}
+@media(max-width:600px){main{padding:13px}.grid{grid-template-columns:1fr 1fr}#results{grid-template-columns:repeat(3,1fr)}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>AI CRASH SIGNAL BOT</h1>
+<div class="sub">LUCKY JET · ANALYSE STATISTIQUE · GAME DATA 365</div>
+</header>
+
+<section class="panel">
+<h2>CONNEXION API</h2>
+<input id="apiKey" type="password" placeholder="Saisis ta clé API GameData365">
+<button id="analyze">LANCER L'ANALYSE</button>
+<div id="status">En attente de connexion.</div>
+</section>
+
+<section class="panel">
+<h2>DONNÉES EN DIRECT</h2>
+<div class="grid">
+<div class="metric"><small>DERNIER COEFFICIENT</small><strong id="live">—</strong></div>
+<div class="metric"><small>ÉTAT DU FLUX</small><strong id="feed">—</strong></div>
+</div>
+</section>
+
+<section class="panel">
+<h2>INDICATEURS STATISTIQUES</h2>
+<div class="grid">
+<div class="metric"><small>MANCHES ANALYSÉES</small><strong id="count">—</strong></div>
+<div class="metric"><small>MOYENNE (100)</small><strong id="mean">—</strong></div>
+<div class="metric"><small>MÉDIANE (100)</small><strong id="median">—</strong></div>
+<div class="metric"><small>VOLATILITÉ (100)</small><strong id="volatility">—</strong></div>
+<div class="metric"><small>FRÉQUENCE SOUS 2x</small><strong id="under2">—</strong></div>
+<div class="metric"><small>FRÉQUENCE À PARTIR DE 5x</small><strong id="over5">—</strong></div>
+</div>
+</section>
+
+<section class="panel">
+<h2>ANALYSE DES 20 DERNIÈRES MANCHES</h2>
+<div class="grid">
+<div class="metric"><small>MOYENNE RÉCENTE</small><strong id="recentMean">—</strong></div>
+<div class="metric"><small>FRÉQUENCE SOUS 2x</small><strong id="recentLow">—</strong></div>
+<div class="metric"><small>FRÉQUENCE À PARTIR DE 5x</small><strong id="recentHigh">—</strong></div>
+<div class="metric"><small>ÉCART AVEC LES 20 PRÉCÉDENTES</small><strong id="difference">—</strong></div>
+</div>
+<p id="interpretation" class="muted">Les résultats apparaîtront après l'analyse.</p>
+</section>
+
+<section class="panel">
+<h2>20 DERNIERS COEFFICIENTS</h2>
+<div id="results"></div>
+</section>
+
+<section class="panel">
+<h2>DIAGNOSTIC DU MODÈLE</h2>
+<p id="diagnostic" class="muted">En attente des données.</p>
+<p class="muted">Les statistiques historiques ne permettent pas de connaître avec certitude le prochain résultat d'un jeu Crash. Aucun signal ne garantit un gain.</p>
+</section>
+</main>
+
+<script>
+const API = "https://api.gamedata365.com";
+const GAME = "lucky_jet";
+const HISTORY_LIMIT = 100;
+const RECENT_WINDOW = 20;
+
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n).toFixed(2);
+
+function average(a){
+  return a.reduce((s,x)=>s+x,0)/a.length;
+}
+function median(a){
+  const b=[...a].sort((x,y)=>x-y);
+  const m=Math.floor(b.length/2);
+  return b.length%2 ? b[m] : (b[m-1]+b[m])/2;
+}
+function stddev(a){
+  const m=average(a);
+  return Math.sqrt(average(a.map(x=>(x-m)**2)));
+}
+function percentage(condition,a){
+  return 100*a.filter(condition).length/a.length;
+}
+function wilson(successes,n){
+  const z=1.96;
+  const p=successes/n;
+  const d=1+z*z/n;
+  const center=(p+z*z/(2*n))/d;
+  const margin=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n))/d;
+  return [100*(center-margin),100*(center+margin)];
+}
+function correlation(a){
+  if(a.length<3)return 0;
+  const x=a.slice(0,-1),y=a.slice(1);
+  const mx=average(x),my=average(y);
+  const num=x.reduce((s,v,i)=>s+(v-mx)*(y[i]-my),0);
+  const den=Math.sqrt(
+    x.reduce((s,v)=>s+(v-mx)**2,0)*
+    y.reduce((s,v)=>s+(v-my)**2,0)
+  );
+  return den ? num/den : 0;
+}
+
+async function request(path,key){
+  const response=await fetch(API+path,{
+    headers:{"X-API-Key":key}
+  });
+  const data=await response.json();
+  if(!response.ok || data.status==="error"){
+    throw new Error(data.message || data.error || "Erreur API "+response.status);
+  }
+  return data;
+}
+
+function show(id,value){
+  $(id).textContent=value;
+}
+
+function analyse(rounds){
+  const values=rounds
+    .filter(r=>r.type!=="gap")
+    .map(r=>Number(r.multiplier))
+    .filter(x=>Number.isFinite(x)&&x>=1);
+
+  if(values.length<20){
+    throw new Error("Moins de 20 manches valides reçues.");
+  }
+
+  const recent=values.slice(0,20);
+  const previous=values.slice(20,40);
+  const low=values.filter(x=>x<2).length;
+  const high=values.filter(x=>x>=5).length;
+  const recentLow=recent.filter(x=>x<2).length;
+  const recentHigh=recent.filter(x=>x>=5).length;
+  const ci=wilson(low,values.length);
+  const diff=previous.length
+    ? average(recent)-average(previous) : null;
+
+  show("count",values.length);
+  show("mean",fmt(average(values))+"x");
+  show("median",fmt(median(values))+"x");
+  show("volatility",fmt(stddev(values)));
+  show("under2",percentage(x=>x<2,values).toFixed(1)+"%");
+  show("over5",percentage(x=>x>=5,values).toFixed(1)+"%");
+
+  show("recentMean",fmt(average(recent))+"x");
+  show("recentLow",percentage(x=>x<2,recent).toFixed(1)+"%");
+  show("recentHigh",percentage(x=>x>=5,recent).toFixed(1)+"%");
+  show("difference",diff===null?"Données insuffisantes":
+    (diff>0?"+":"")+fmt(diff)+"x");
+
+  $("results").innerHTML=recent.map(x=>
+    `<div class="result ${x<2?"red":x>=5?"green":"blue"}">${fmt(x)}x</div>`
+  ).join("");
+
+  let text=`Sur les ${values.length} manches reçues, `;
+  text+=`la fréquence observée sous 2x est de ${percentage(x=>x<2,values).toFixed(1)}%. `;
+  text+=`L'intervalle de confiance à 95% estimé pour cette fréquence est de ${ci[0].toFixed(1)}% à ${ci[1].toFixed(1)}%. `;
+  text+=`La corrélation entre coefficients consécutifs est ${correlation(values).toFixed(3)}. `;
+  text+="Ces mesures décrivent l'historique et ne prédisent pas le prochain coefficient.";
+  show("diagnostic",text);
+
+  if(diff!==null){
+    show("interpretation",
+      "Comparaison descriptive : moyenne des 20 dernières manches "+
+      (diff>0?"supérieure":diff<0?"inférieure":"identique")+
+      " à celle des 20 manches précédentes. Cela ne démontre pas un changement de probabilité."
+    );
+  }
+}
+
+async function run(){
+  const key=$("apiKey").value.trim();
+  if(!key){
+    show("status","Saisis d'abord ta clé API.");
+    return;
+  }
+
+  $("analyze").disabled=true;
+  show("status","Connexion à GameData365...");
+
+  try{
+    const [live,history]=await Promise.all([
+      request("/v1/crash/live",key),
+      request(`/v1/crash/history?game=${GAME}&limit=${HISTORY_LIMIT}`,key)
+    ]);
+
+    const game=(live.games||[]).find(g=>g.game_id===GAME);
+    if(game && game.latest){
+      show("live",fmt(game.latest.multiplier)+"x");
+      show("feed",game.stale?"DONNÉES ANCIENNES":"EN DIRECT");
+    }else{
+      show("live","—");
+      show("feed","INDISPONIBLE");
+    }
+
+    const rounds=history.rounds||[];
+    analyse(rounds);
+    show("status",`Analyse terminée : ${rounds.filter(r=>r.type!=="gap").length} manches reçues.`);
+  }catch(error){
+    show("status","Erreur : "+error.message+
+      ". Si le navigateur bloque la requête, vérifie la compatibilité CORS de l'API.");
+  }finally{
+    $("analyze").disabled=false;
+  }
+}
+
+$("analyze").addEventListener("click",run);
+</script>
+</body>
+  </html>
+  
