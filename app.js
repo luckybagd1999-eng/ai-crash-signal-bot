@@ -1,110 +1,125 @@
 
 "use strict";
 
-/* =========================================
-   AI CRASH SIGNAL BOT — LUCKY JET
-   Signal minimal + délai de préparation
-========================================= */
-
 const CONFIG = {
   API: "https://ai-crash-signal-bot.onrender.com",
   HISTORY_LIMIT: 100,
   RECENT_WINDOW: 20,
   REFRESH_MS: 60000,
+  COUNTDOWN_MS: 1000,
+  MIN_COEFFICIENT: 2.00,
   MIN_PREPARATION_SECONDS: 60
 };
 
 const $ = id => document.getElementById(id);
 
-let nextEstimatedTime = null;
-let countdownTimer = null;
-let refreshTimer = null;
 let analysing = false;
+let nextEstimatedTime = null;
+let lastRoundTimestamp = null;
+let refreshTimer = null;
+let countdownTimer = null;
 
 function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-
-  return sorted.length % 2
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
+  const sorted = [...values].sort((a,b) => a-b);
+  const n = sorted.length;
+  return n % 2
+    ? sorted[Math.floor(n/2)]
+    : (sorted[n/2-1] + sorted[n/2])/2;
 }
 
 function quantile(values, q) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const position = (sorted.length - 1) * q;
-  const low = Math.floor(position);
-  const high = Math.ceil(position);
+  const sorted = [...values].sort((a,b) => a-b);
+  const p = (sorted.length-1)*q;
+  const low = Math.floor(p);
+  const high = Math.ceil(p);
 
   return sorted[low] +
-    (sorted[high] - sorted[low]) * (position - low);
+    (sorted[high]-sorted[low])*(p-low);
 }
 
-function formatMultiplier(value) {
+function fmt(value) {
   return Number(value).toFixed(2) + "x";
 }
 
-function showError(message) {
-  $("coefficient").textContent = "Indisponible";
-  $("range").textContent = "--";
-  $("estimatedTime").textContent = "--:--:--";
-  $("countdown").textContent = "Actualisation...";
-  console.error("AI CRASH BOT :", message);
+function setText(id, value) {
+  const element = $(id);
+  if (element) element.textContent = value;
 }
 
-async function getData(endpoint) {
-  const response = await fetch(CONFIG.API + endpoint, {
-    headers: { "Accept": "application/json" },
-    cache: "no-store"
-  });
+async function getHistory() {
+  const response = await fetch(
+    CONFIG.API + "/api/history",
+    {
+      headers: {"Accept":"application/json"},
+      cache:"no-store"
+    }
+  );
 
   if (!response.ok) {
-    throw new Error("Erreur HTTP " + response.status);
+    throw new Error("API indisponible : " + response.status);
   }
 
   return response.json();
 }
 
-/* =========================================
-   HISTORIQUE
-========================================= */
-
 function normalizeRounds(data) {
   if (!Array.isArray(data.rounds)) {
-    throw new Error("Historique indisponible.");
+    throw new Error("Historique non disponible");
   }
 
-  return data.rounds
-    .map(round => ({
-      multiplier: Number(round.multiplier),
-      timestamp: new Date(round.timestamp).getTime()
-    }))
-    .filter(round =>
-      Number.isFinite(round.multiplier) &&
-      round.multiplier > 0 &&
-      Number.isFinite(round.timestamp)
-    )
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(-CONFIG.HISTORY_LIMIT);
+  return data.rounds.map(round => ({
+    multiplier: Number(round.multiplier),
+    timestamp: new Date(round.timestamp).getTime()
+  }))
+  .filter(round =>
+    Number.isFinite(round.multiplier) &&
+    round.multiplier > 0 &&
+    Number.isFinite(round.timestamp)
+  )
+  .sort((a,b) => a.timestamp-b.timestamp)
+  .slice(-CONFIG.HISTORY_LIMIT);
 }
 
 /* =========================================
-   ANALYSE DU COEFFICIENT
+   FILTRE STATISTIQUE STRICT
 ========================================= */
 
-function analyseCoefficient(rounds) {
-  const recent = rounds
-    .slice(-CONFIG.RECENT_WINDOW)
-    .map(round => round.multiplier);
-
-  if (recent.length < CONFIG.RECENT_WINDOW) {
-    throw new Error("20 manches nécessaires.");
+function analyseStrict(rounds) {
+  if (rounds.length < CONFIG.HISTORY_LIMIT) {
+    return {
+      valid:false,
+      reason:"100 manches complètes nécessaires"
+    };
   }
 
+  const all = rounds.map(r => r.multiplier);
+  const recent = all.slice(-CONFIG.RECENT_WINDOW);
+
+  const median100 = median(all);
+  const median20 = median(recent);
+
+  const q25_100 = quantile(all,0.25);
+  const q25_20 = quantile(recent,0.25);
+  const q75_20 = quantile(recent,0.75);
+
+  const conditions = [
+    median100 >= CONFIG.MIN_COEFFICIENT,
+    median20 >= CONFIG.MIN_COEFFICIENT,
+    q25_100 >= CONFIG.MIN_COEFFICIENT,
+    q25_20 >= CONFIG.MIN_COEFFICIENT
+  ];
+
+  const valid = conditions.every(Boolean);
+
   return {
-    central: median(recent),
-    low: quantile(recent, 0.25),
-    high: quantile(recent, 0.75)
+    valid,
+    central:median20,
+    low:q25_20,
+    high:q75_20,
+    median100,
+    q25_100,
+    median20,
+    q25_20
   };
 }
 
@@ -112,12 +127,12 @@ function analyseCoefficient(rounds) {
    ANALYSE TEMPORELLE
 ========================================= */
 
-function analyseTime(rounds) {
+function estimateNextTime(rounds) {
   const intervals = [];
 
-  for (let i = 1; i < rounds.length; i++) {
+  for (let i=1; i<rounds.length; i++) {
     const seconds =
-      (rounds[i].timestamp - rounds[i - 1].timestamp) / 1000;
+      (rounds[i].timestamp-rounds[i-1].timestamp)/1000;
 
     if (seconds >= 1 && seconds <= 600) {
       intervals.push(seconds);
@@ -125,47 +140,71 @@ function analyseTime(rounds) {
   }
 
   if (intervals.length < 5) {
-    throw new Error("Données temporelles insuffisantes.");
+    throw new Error("Intervalles temporels insuffisants");
   }
 
   const typicalInterval = median(intervals.slice(-20));
+  const latest = rounds[rounds.length-1].timestamp;
+  const now = Date.now();
 
-  const latestTimestamp =
-    rounds[rounds.length - 1].timestamp;
+  let estimate = latest + typicalInterval*1000;
 
-  const minimumTime =
-    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000;
-
-  /*
-    Projection du prochain créneau théorique.
-    On conserve les intervalles historiques,
-    mais on impose un minimum de 60 secondes
-    à partir de la publication du signal.
-  */
-
-  let estimatedTime = latestTimestamp + typicalInterval * 1000;
-
-  while (estimatedTime < minimumTime) {
-    estimatedTime += typicalInterval * 1000;
+  while (
+    estimate < now + CONFIG.MIN_PREPARATION_SECONDS*1000
+  ) {
+    estimate += typicalInterval*1000;
   }
 
-  return estimatedTime;
+  return {
+    time:estimate,
+    latestTimestamp:latest
+  };
+}
+
+/* =========================================
+   AFFICHAGE SANS SIGNAL
+========================================= */
+
+function noSignal(reason) {
+  nextEstimatedTime = null;
+  lastRoundTimestamp = null;
+
+  setText("coefficient","AUCUN SIGNAL");
+  setText("range","--");
+  setText("estimatedTime","--:--:--");
+  setText("countdown","--:--");
+  setText("signalStatus",reason);
+
+  setText("nextCoefficient","AUCUN SIGNAL");
+  setText("nextRange","--");
+  setText("nextTime","--:--:--");
+  setText("nextCountdown","--:--");
+  setText("nextStatus","Les critères stricts de 2.00x ne sont pas réunis.");
 }
 
 /* =========================================
    AFFICHAGE DU SIGNAL
 ========================================= */
 
-function displaySignal(coefficient, estimatedTime) {
-  $("coefficient").textContent =
-    formatMultiplier(coefficient.central);
+function displaySignal(stats, timing) {
+  setText("coefficient",fmt(stats.central));
+  setText("range",fmt(stats.low)+" – "+fmt(stats.high));
 
-  $("range").textContent =
-    formatMultiplier(coefficient.low) +
-    " – " +
-    formatMultiplier(coefficient.high);
+  setText("nextCoefficient",fmt(stats.central));
+  setText("nextRange",fmt(stats.low)+" – "+fmt(stats.high));
 
-  nextEstimatedTime = estimatedTime;
+  nextEstimatedTime = timing.time;
+  lastRoundTimestamp = timing.latestTimestamp;
+
+  setText(
+    "signalStatus",
+    "Tous les critères statistiques du filtre 2.00x sont satisfaits."
+  );
+
+  setText(
+    "nextStatus",
+    "Estimation expérimentale de la prochaine manche."
+  );
 
   updateCountdown();
 }
@@ -174,35 +213,41 @@ function displaySignal(coefficient, estimatedTime) {
    COMPTE À REBOURS
 ========================================= */
 
+function updateOneCountdown(timeId,countdownId) {
+  if (!nextEstimatedTime) return;
+
+  const target = new Date(nextEstimatedTime);
+
+  setText(timeId,target.toLocaleTimeString("fr-FR",{
+    hour:"2-digit",
+    minute:"2-digit",
+    second:"2-digit",
+    hour12:false
+  }));
+
+  const remaining = Math.max(
+    0,
+    Math.floor((nextEstimatedTime-Date.now())/1000)
+  );
+
+  const hours = Math.floor(remaining/3600);
+  const minutes = Math.floor((remaining%3600)/60);
+  const seconds = remaining%60;
+
+  const value = [hours,minutes,seconds]
+    .map(n=>String(n).padStart(2,"0"))
+    .join(":");
+
+  setText(countdownId,
+    remaining === 0 ? "ÉCHÉANCE" : value
+  );
+}
+
 function updateCountdown() {
   if (!nextEstimatedTime) return;
 
-  $("estimatedTime").textContent =
-    new Date(nextEstimatedTime).toLocaleTimeString("fr-FR", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    });
-
-  const remaining = Math.floor(
-    (nextEstimatedTime - Date.now()) / 1000
-  );
-
-  if (remaining <= 0) {
-    $("countdown").textContent = "Actualisation...";
-    return;
-  }
-
-  const hours = Math.floor(remaining / 3600);
-  const minutes = Math.floor((remaining % 3600) / 60);
-  const seconds = remaining % 60;
-
-  $("countdown").textContent = [
-    hours,
-    minutes,
-    seconds
-  ].map(value => String(value).padStart(2, "0")).join(":");
+  updateOneCountdown("estimatedTime","countdown");
+  updateOneCountdown("nextTime","nextCountdown");
 }
 
 /* =========================================
@@ -215,20 +260,45 @@ async function runAnalysis() {
   analysing = true;
 
   try {
-    const history = await getData("/api/history");
-    const rounds = normalizeRounds(history);
+    const data = await getHistory();
+    const rounds = normalizeRounds(data);
 
-    if (rounds.length < CONFIG.RECENT_WINDOW) {
-      throw new Error("Historique insuffisant.");
+    if (rounds.length < CONFIG.HISTORY_LIMIT) {
+      noSignal("Historique insuffisant : 100 manches nécessaires.");
+      return;
     }
 
-    const coefficient = analyseCoefficient(rounds);
-    const estimatedTime = analyseTime(rounds);
+    const stats = analyseStrict(rounds);
 
-    displaySignal(coefficient, estimatedTime);
+    if (!stats.valid) {
+      noSignal(
+        "AUCUN SIGNAL — filtre strict 2.00x non satisfait."
+      );
+      return;
+    }
 
-  } catch (error) {
-    showError(error.message);
+    const timing = estimateNextTime(rounds);
+
+    /*
+      Ne pas repousser l'heure à chaque actualisation
+      si aucune nouvelle manche n'est arrivée.
+    */
+    if (
+      lastRoundTimestamp === timing.latestTimestamp &&
+      nextEstimatedTime &&
+      nextEstimatedTime > Date.now()
+    ) {
+      displaySignal(stats,{
+        time:nextEstimatedTime,
+        latestTimestamp:timing.latestTimestamp
+      });
+    } else {
+      displaySignal(stats,timing);
+    }
+
+  } catch(error) {
+    noSignal("Données indisponibles : " + error.message);
+    console.error(error);
 
   } finally {
     analysing = false;
@@ -242,16 +312,22 @@ async function runAnalysis() {
 function initialize() {
   runAnalysis();
 
-  if (countdownTimer) clearInterval(countdownTimer);
   if (refreshTimer) clearInterval(refreshTimer);
+  if (countdownTimer) clearInterval(countdownTimer);
 
-  countdownTimer = setInterval(updateCountdown, 1000);
-  refreshTimer = setInterval(runAnalysis, CONFIG.REFRESH_MS);
+  refreshTimer = setInterval(
+    runAnalysis,
+    CONFIG.REFRESH_MS
+  );
+
+  countdownTimer = setInterval(
+    updateCountdown,
+    CONFIG.COUNTDOWN_MS
+  );
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initialize);
+  document.addEventListener("DOMContentLoaded",initialize);
 } else {
   initialize();
 }
-   
