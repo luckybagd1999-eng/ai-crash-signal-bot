@@ -2,162 +2,104 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#080d18">
-  <title>AI CRASH SIGNAL BOT</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#080d18">
+<title>AI CRASH SIGNAL BOT</title>
 
-  <style>
-    * {
-      box-sizing: border-box;
-    }
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;padding:20px;min-height:100vh;
+  display:flex;justify-content:center;align-items:center;
+  background:radial-gradient(circle at top,#17294b,#080d18 65%);
+  color:#f4f7ff;font-family:Arial,sans-serif
+}
+.dashboard{width:100%;max-width:560px}
+h1{text-align:center;font-size:22px;letter-spacing:1px}
+.subtitle{text-align:center;color:#91a6c9;font-size:12px;margin-bottom:25px}
+.panel{
+  background:#101d33;border:1px solid #2a4168;
+  border-radius:16px;padding:20px;margin-bottom:18px
+}
+.panel h2{text-align:center;color:#7db6ff;font-size:15px;letter-spacing:1px}
+.metric{
+  background:#0b1629;border:1px solid #253a5c;
+  border-radius:11px;padding:15px;margin-top:12px;text-align:center
+}
+.metric-label{font-size:11px;color:#91a6c9;margin-bottom:9px}
+.metric-value{font-size:clamp(25px,7vw,34px);font-weight:bold;font-variant-numeric:tabular-nums}
+.green{color:#45e0a0}
+.blue{color:#7db6ff}
+.status{text-align:center;font-size:12px;margin-top:14px;color:#91a6c9}
+.disclaimer{text-align:center;color:#71839f;font-size:10px;line-height:1.5;margin-top:20px}
+</style>
 
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      background:
-        radial-gradient(circle at top, #17294b 0%, #080d18 55%);
-      color: #f4f7ff;
-      font-family: Arial, sans-serif;
-    }
-
-    .dashboard {
-      width: 100%;
-      max-width: 540px;
-      padding: 26px;
-      border: 1px solid #263b60;
-      border-radius: 20px;
-      background: rgba(12, 21, 39, 0.96);
-      box-shadow: 0 20px 70px rgba(0, 0, 0, 0.4);
-    }
-
-    h1 {
-      margin: 0 0 8px;
-      text-align: center;
-      font-size: 21px;
-      letter-spacing: 1.5px;
-    }
-
-    .subtitle {
-      margin-bottom: 28px;
-      color: #91a6c9;
-      text-align: center;
-      font-size: 12px;
-      letter-spacing: 1px;
-    }
-
-    .section-title {
-      margin-bottom: 22px;
-      color: #7db6ff;
-      text-align: center;
-      font-size: 15px;
-      letter-spacing: 1.3px;
-    }
-
-    .metric {
-      margin-bottom: 15px;
-      padding: 18px;
-      border: 1px solid #253a5c;
-      border-radius: 13px;
-      background: #101d33;
-      text-align: center;
-    }
-
-    .metric-label {
-      margin-bottom: 10px;
-      color: #91a6c9;
-      font-size: 11px;
-      letter-spacing: 1px;
-    }
-
-    .metric-value {
-      color: #ffffff;
-      font-size: clamp(27px, 7vw, 36px);
-      font-weight: bold;
-      font-variant-numeric: tabular-nums;
-    }
-
-    #coefficient {
-      color: #45e0a0;
-    }
-
-    #countdown {
-      color: #7db6ff;
-    }
-
-    .disclaimer {
-      margin: 20px 0 0;
-      color: #71839f;
-      text-align: center;
-      font-size: 10px;
-      line-height: 1.5;
-    }
-
-    .error {
-      color: #ff8b8b;
-      font-size: 15px;
-    }
-  </style>
-
-  <script src="./app.js?v=10" defer></script>
+<script src="./app.js?v=11" defer></script>
 </head>
 
 <body>
-  <main class="dashboard">
+<main class="dashboard">
+  <h1>AI CRASH SIGNAL BOT</h1>
+  <div class="subtitle">LUCKY JET · ANALYSE RENFORCÉE</div>
 
-    <h1>AI CRASH SIGNAL BOT</h1>
-    <div class="subtitle">LUCKY JET · SIGNAL STATISTIQUE</div>
+  <section class="panel">
+    <h2>SIGNAL ACTUEL</h2>
 
-    <div class="section-title">
-      SIGNAL COMBINÉ — LUCKY JET
+    <div class="metric">
+      <div class="metric-label">COEFFICIENT CENTRAL INDICATIF</div>
+      <div class="metric-value green" id="coefficient">Analyse...</div>
     </div>
 
     <div class="metric">
-      <div class="metric-label">
-        COEFFICIENT CENTRAL INDICATIF
-      </div>
-      <div class="metric-value" id="coefficient">
-        Analyse...
-      </div>
+      <div class="metric-label">FOURCHETTE STATISTIQUE</div>
+      <div class="metric-value" id="range">--</div>
     </div>
 
     <div class="metric">
-      <div class="metric-label">
-        FOURCHETTE STATISTIQUE
-      </div>
-      <div class="metric-value" id="range">
-        Analyse...
-      </div>
+      <div class="metric-label">HEURE ESTIMÉE</div>
+      <div class="metric-value" id="estimatedTime">--:--:--</div>
     </div>
 
     <div class="metric">
-      <div class="metric-label">
-        HEURE ESTIMÉE
-      </div>
-      <div class="metric-value" id="estimatedTime">
-        --:--:--
-      </div>
+      <div class="metric-label">TEMPS DE PRÉPARATION</div>
+      <div class="metric-value blue" id="countdown">--:--</div>
+    </div>
+
+    <div class="status" id="signalStatus">Analyse en cours...</div>
+  </section>
+
+  <section class="panel">
+    <h2>PROCHAINE COTE</h2>
+
+    <div class="metric">
+      <div class="metric-label">COEFFICIENT ESTIMÉ</div>
+      <div class="metric-value green" id="nextCoefficient">En attente</div>
     </div>
 
     <div class="metric">
-      <div class="metric-label">
-        TEMPS RESTANT ESTIMÉ
-      </div>
-      <div class="metric-value" id="countdown">
-        Calcul...
-      </div>
+      <div class="metric-label">FOURCHETTE INDICATIVE</div>
+      <div class="metric-value" id="nextRange">--</div>
     </div>
 
-    <p class="disclaimer">
-      Estimations statistiques basées sur l'historique.
-      Elles ne garantissent ni le prochain coefficient
-      ni un moment favorable pour miser.
-    </p>
+    <div class="metric">
+      <div class="metric-label">HEURE ESTIMÉE</div>
+      <div class="metric-value" id="nextTime">--:--:--</div>
+    </div>
 
-  </main>
+    <div class="metric">
+      <div class="metric-label">TEMPS RESTANT</div>
+      <div class="metric-value blue" id="nextCountdown">--:--</div>
+    </div>
+
+    <div class="status" id="nextStatus">En attente d'une analyse valide</div>
+  </section>
+
+  <p class="disclaimer">
+    Estimations statistiques expérimentales. Les résultats d'un jeu
+    aléatoire ne peuvent pas être prédits de manière fiable.
+    Aucun signal ne garantit un coefficient supérieur ou égal à 2x.
+  </p>
+</main>
 </body>
 </html>
