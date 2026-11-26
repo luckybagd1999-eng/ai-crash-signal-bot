@@ -3,158 +3,83 @@
 
 /* =========================================
    AI CRASH SIGNAL BOT
-   Jeu : Lucky Jet
-   API : GameData365
-   Moteur : Analyse statistique adaptative
-   Fenêtres : 10 / 20 / 30 / 50 / 100
+   LUCKY JET - ADAPTIVE INTELLIGENCE
 ========================================= */
 
 const CONFIG = {
-  API_URL: "https://ai-crash-signal-bot.onrender.com/api/history",
+  API: "https://ai-crash-signal-bot.onrender.com",
   HISTORY_LIMIT: 100,
   REFRESH_MS: 60000,
-  COUNTDOWN_MS: 1000,
   MIN_COEFFICIENT: 2.00,
   MIN_ROUNDS: 40,
+  MIN_HITS: 2,
   MIN_PREPARATION_SECONDS: 60,
   REQUEST_TIMEOUT: 15000,
   WINDOWS: [10, 20, 30, 50, 100]
 };
 
+const $ = id => document.getElementById(id);
+
+let analysing = false;
+let nextEstimatedTime = null;
 let lastRoundTimestamp = null;
-let estimatedNextTime = null;
-let countdownInterval = null;
-let refreshInterval = null;
-let analysisInProgress = false;
 
 /* =========================================
    OUTILS MATHÉMATIQUES
 ========================================= */
+
+function median(values) {
+  if (!values.length) return 0;
+
+  const s = [...values].sort((a, b) => a - b);
+  const n = s.length;
+
+  return n % 2
+    ? s[Math.floor(n / 2)]
+    : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+function quantile(values, q) {
+  if (!values.length) return 0;
+
+  const s = [...values].sort((a, b) => a - b);
+  const p = (s.length - 1) * q;
+  const low = Math.floor(p);
+  const high = Math.ceil(p);
+
+  return s[low] + (s[high] - s[low]) * (p - low);
+}
 
 function average(values) {
   if (!values.length) return 0;
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-function median(values) {
-  if (!values.length) return 0;
-
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-
-  return sorted.length % 2
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
-function quantile(values, q) {
-  if (!values.length) return 0;
-
-  const sorted = [...values].sort((a, b) => a - b);
-  const position = (sorted.length - 1) * q;
-  const lower = Math.floor(position);
-  const upper = Math.ceil(position);
-
-  if (lower === upper) return sorted[lower];
-
-  return sorted[lower] +
-    (sorted[upper] - sorted[lower]) * (position - lower);
-}
-
 function standardDeviation(values) {
   if (values.length < 2) return 0;
 
-  const avg = average(values);
-  const variance = average(
-    values.map(value => Math.pow(value - avg, 2))
-  );
+  const mean = average(values);
 
-  return Math.sqrt(variance);
+  return Math.sqrt(
+    average(values.map(v => (v - mean) ** 2))
+  );
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function formatCoefficient(value) {
+function formatMultiplier(value) {
   return Number(value).toFixed(2) + "x";
 }
 
-function formatTime(date) {
-  return date.toLocaleTimeString("fr-FR", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  });
-}
-
-/* =========================================
-   AFFICHAGE
-========================================= */
-
 function setText(id, value) {
-  const element = document.getElementById(id);
-  if (element) element.textContent = value;
-}
-
-function setLight(activeLight) {
-  ["lightGreen", "lightOrange", "lightRed"].forEach(id => {
-    const element = document.getElementById(id);
-    if (element) {
-      element.classList.remove("active", "on");
-    }
-  });
-
-  if (!activeLight) return;
-
-  const selected = document.getElementById(activeLight);
-  if (selected) {
-    selected.classList.add("active");
-  }
-}
-
-function displayNoSignal(message) {
-  setText("coefficient", "AUCUN SIGNAL");
-  setText("range", "--");
-  setText("lightLabel", "AUCUN CANDIDAT");
-  setText("estimatedTime", "--:--:--");
-  setText("countdown", "--:--:--");
-  setText("signalStatus", message);
-
-  setLight(null);
-}
-
-function displaySignal(result) {
-  setText(
-    "coefficient",
-    formatCoefficient(result.central)
-  );
-
-  setText(
-    "range",
-    formatCoefficient(result.low) +
-    " – " +
-    formatCoefficient(result.high)
-  );
-
-  setText("lightLabel", result.lightLabel);
-
-  setText(
-    "signalStatus",
-    "CANDIDAT STATISTIQUE IDENTIFIÉ"
-  );
-
-  if (result.light === "GREEN") {
-    setLight("lightGreen");
-  } else if (result.light === "ORANGE") {
-    setLight("lightOrange");
-  } else {
-    setLight("lightRed");
-  }
+  const el = $(id);
+  if (el) el.textContent = value;
 }
 
 /* =========================================
-   RÉCUPÉRATION DES DONNÉES
+   CONNEXION API
 ========================================= */
 
 async function getHistory() {
@@ -167,191 +92,170 @@ async function getHistory() {
 
   try {
     const response = await fetch(
-      CONFIG.API_URL + "?limit=" + CONFIG.HISTORY_LIMIT,
+      CONFIG.API + "/api/history",
       {
         method: "GET",
+        headers: { "Accept": "application/json" },
         cache: "no-store",
         signal: controller.signal
       }
     );
 
     if (!response.ok) {
-      throw new Error("Erreur API : " + response.status);
+      throw new Error("Erreur HTTP " + response.status);
     }
 
     const data = await response.json();
 
-    const rounds = Array.isArray(data)
-      ? data
-      : data.rounds || data.history || data.results || [];
-
-    if (!Array.isArray(rounds) || rounds.length === 0) {
-      throw new Error("Aucune manche reçue.");
+    if (!Array.isArray(data.rounds)) {
+      throw new Error("Historique API invalide.");
     }
 
-    return rounds;
+    return data;
+
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Délai API dépassé.");
+    }
+
+    throw error;
+
   } finally {
     clearTimeout(timeout);
   }
 }
 
 /* =========================================
-   NORMALISATION DES MANCHES
+   NORMALISATION
 ========================================= */
 
-function normalizeRounds(rawRounds) {
-  const normalized = [];
+function normalizeRounds(data) {
+  return data.rounds
+    .map(round => {
+      const multiplierValue =
+        round.multiplier ??
+        round.coefficient ??
+        round.crash_point ??
+        round.crashPoint ??
+        round.result ??
+        round.value;
 
-  for (const round of rawRounds) {
-    let multiplier = null;
+      const multiplier = Number(multiplierValue);
 
-    if (typeof round === "number") {
-      multiplier = round;
-    } else if (typeof round === "string") {
-      multiplier = parseFloat(round);
-    } else if (round && typeof round === "object") {
-      const possibleValues = [
-        round.multiplier,
-        round.coefficient,
-        round.crash_point,
-        round.crashPoint,
-        round.result,
-        round.value,
-        round.x
-      ];
+      const rawTimestamp =
+        round.timestamp ??
+        round.created_at ??
+        round.createdAt ??
+        round.date ??
+        round.time;
 
-      for (const value of possibleValues) {
-        if (value !== undefined && value !== null) {
-          multiplier = parseFloat(value);
-          if (Number.isFinite(multiplier)) break;
+      let timestamp = null;
+
+      if (typeof rawTimestamp === "number") {
+        timestamp = rawTimestamp;
+
+        if (timestamp < 100000000000) {
+          timestamp *= 1000;
         }
+      } else if (rawTimestamp) {
+        const parsed = Date.parse(rawTimestamp);
+        if (Number.isFinite(parsed)) timestamp = parsed;
       }
-    }
 
-    if (
-      !Number.isFinite(multiplier) ||
-      multiplier < 1
-    ) {
-      continue;
-    }
-
-    let timestamp = null;
-
-    if (round && typeof round === "object") {
-      const possibleDates = [
-        round.timestamp,
-        round.created_at,
-        round.createdAt,
-        round.date,
-        round.time,
-        round.started_at
-      ];
-
-      for (const value of possibleDates) {
-        if (value === undefined || value === null) continue;
-
-        if (typeof value === "number") {
-          timestamp = value < 1000000000000
-            ? value * 1000
-            : value;
-        } else {
-          const parsed = Date.parse(value);
-          if (Number.isFinite(parsed)) timestamp = parsed;
-        }
-
-        if (timestamp) break;
+      return { multiplier, timestamp };
+    })
+    .filter(r =>
+      Number.isFinite(r.multiplier) &&
+      r.multiplier >= 1
+    )
+    .sort((a, b) => {
+      if (a.timestamp && b.timestamp) {
+        return a.timestamp - b.timestamp;
       }
-    }
-
-    normalized.push({
-      multiplier,
-      timestamp
-    });
-  }
-
-  normalized.sort((a, b) => {
-    if (a.timestamp && b.timestamp) {
-      return a.timestamp - b.timestamp;
-    }
-    return 0;
-  });
-
-  return normalized.slice(-CONFIG.HISTORY_LIMIT);
+      return 0;
+    })
+    .slice(-CONFIG.HISTORY_LIMIT);
 }
 
 /* =========================================
-   ANALYSE DES CHANGEMENTS STATISTIQUES
+   DÉTECTION DES CHANGEMENTS
 ========================================= */
 
 function analyseRegime(rounds) {
-  if (rounds.length < 40) {
-    return {
-      state: "DONNÉES INSUFFISANTES",
-      description: "Collecte statistique en cours."
-    };
-  }
-
   const values = rounds.map(r => r.multiplier);
 
   const recent = values.slice(-20);
   const previous = values.slice(-40, -20);
 
+  if (recent.length < 20 || previous.length < 20) {
+    return {
+      state: "DONNÉES INSUFFISANTES",
+      details: "Comparaison des périodes indisponible.",
+      strongChange: false
+    };
+  }
+
   const recentMedian = median(recent);
   const previousMedian = median(previous);
 
-  const recentFrequency =
+  const recentRate =
     recent.filter(v => v >= 2).length / recent.length;
 
-  const previousFrequency =
+  const previousRate =
     previous.filter(v => v >= 2).length / previous.length;
 
   const recentVolatility = standardDeviation(recent);
   const previousVolatility = standardDeviation(previous);
 
-  const medianDifference = Math.abs(
+  const medianChange = Math.abs(
     recentMedian - previousMedian
   );
 
-  const frequencyDifference = Math.abs(
-    recentFrequency - previousFrequency
+  const frequencyChange = Math.abs(
+    recentRate - previousRate
   );
 
   const volatilityRatio = previousVolatility > 0
     ? recentVolatility / previousVolatility
     : 1;
 
-  if (
-    medianDifference >= 0.75 ||
-    frequencyDifference >= 0.30 ||
+  const strongChange =
+    medianChange >= 0.75 ||
+    frequencyChange >= 0.30 ||
     volatilityRatio >= 2.20 ||
-    volatilityRatio <= 0.45
-  ) {
-    return {
-      state: "CHANGEMENT IMPORTANT",
-      description: "Variation importante détectée. Analyse récente prioritaire."
-    };
-  }
+    volatilityRatio <= 0.45;
 
-  if (
-    medianDifference >= 0.35 ||
-    frequencyDifference >= 0.20 ||
+  const moderateChange =
+    medianChange >= 0.35 ||
+    frequencyChange >= 0.20 ||
     volatilityRatio >= 1.60 ||
-    volatilityRatio <= 0.65
-  ) {
-    return {
-      state: "CHANGEMENT DÉTECTÉ",
-      description: "Distribution en évolution. Adaptation des fenêtres."
-    };
+    volatilityRatio <= 0.65;
+
+  let state = "STABLE";
+  let details = "Distribution historique relativement stable.";
+
+  if (strongChange) {
+    state = "CHANGEMENT IMPORTANT";
+    details = "Variation importante détectée. Analyse récente prioritaire.";
+  } else if (moderateChange) {
+    state = "CHANGEMENT DÉTECTÉ";
+    details = "Variation statistique détectée. Fenêtres réévaluées.";
   }
 
   return {
-    state: "STABLE",
-    description: "Distribution récente relativement stable."
+    state,
+    details,
+    strongChange,
+    recentRate,
+    previousRate,
+    medianChange,
+    frequencyChange,
+    volatilityRatio
   };
 }
 
 /* =========================================
-   ÉVALUATION DE CHAQUE FENÊTRE
+   ÉVALUATION DES FENÊTRES
 ========================================= */
 
 function evaluateWindow(rounds, size) {
@@ -361,21 +265,25 @@ function evaluateWindow(rounds, size) {
     .slice(-size)
     .map(r => r.multiplier);
 
-  const central = median(sample);
-  const low = quantile(sample, 0.25);
-  const high = quantile(sample, 0.75);
+  // On étudie les manches ayant atteint au moins 2x.
+  const successful = sample.filter(
+    value => value >= CONFIG.MIN_COEFFICIENT
+  );
 
-  const hitRate =
-    sample.filter(v => v >= 2).length / size;
+  if (successful.length < CONFIG.MIN_HITS) {
+    return null;
+  }
 
-  const deviation = standardDeviation(sample);
+  const central = median(successful);
+  const low = quantile(successful, 0.25);
+  const high = quantile(successful, 0.75);
+
+  const hitRate = successful.length / sample.length;
+
+  const deviation = standardDeviation(successful);
 
   const relativeSpread = central > 0
     ? (high - low) / central
-    : 1;
-
-  const relativeDeviation = central > 0
-    ? deviation / central
     : 1;
 
   const stabilityScore = clamp(
@@ -384,24 +292,17 @@ function evaluateWindow(rounds, size) {
     100
   );
 
-  const volatilityScore = clamp(
-    100 - relativeDeviation * 70,
-    0,
-    100
-  );
-
   const frequencyScore = hitRate * 100;
 
-  const sampleScore = size === 10 ? 50 :
-    size === 20 ? 65 :
-    size === 30 ? 75 :
-    size === 50 ? 90 : 100;
+  const sampleQuality = size >= 50 ? 100 :
+    size >= 30 ? 85 :
+    size >= 20 ? 70 : 55;
 
-  const score =
+  const score = Math.round(
+    frequencyScore * 0.45 +
     stabilityScore * 0.40 +
-    volatilityScore * 0.25 +
-    frequencyScore * 0.20 +
-    sampleScore * 0.15;
+    sampleQuality * 0.15
+  );
 
   return {
     size,
@@ -409,6 +310,7 @@ function evaluateWindow(rounds, size) {
     low,
     high,
     hitRate,
+    successfulCount: successful.length,
     deviation,
     stabilityScore,
     score
@@ -416,7 +318,7 @@ function evaluateWindow(rounds, size) {
 }
 
 /* =========================================
-   SÉLECTION ADAPTATIVE
+   MOTEUR ADAPTATIF
 ========================================= */
 
 function adaptiveAnalysis(rounds) {
@@ -430,29 +332,16 @@ function adaptiveAnalysis(rounds) {
     return {
       valid: false,
       regime,
-      reason: "Historique insuffisant."
+      reason:
+        "Aucune fenêtre ne contient au moins " +
+        CONFIG.MIN_HITS +
+        " manches ayant atteint 2.00x."
     };
   }
 
-  // On conserve uniquement les fenêtres dont
-  // le coefficient central atteint 2.00x.
-  const eligible = evaluations.filter(
-    item => item.central >= CONFIG.MIN_COEFFICIENT
-  );
-
-  if (!eligible.length) {
-    return {
-      valid: false,
-      regime,
-      evaluations,
-      reason: "Aucun coefficient central ne satisfait le seuil de 2.00x."
-    };
-  }
-
-  // La fenêtre est choisie selon la stabilité
-  // et la qualité statistique, pas selon le
-  // coefficient central le plus élevé.
-  eligible.sort((a, b) => {
+  // Priorité au score statistique.
+  // En cas d'égalité, priorité à la fenêtre la plus large.
+  evaluations.sort((a, b) => {
     if (b.score !== a.score) {
       return b.score - a.score;
     }
@@ -460,42 +349,23 @@ function adaptiveAnalysis(rounds) {
     return b.size - a.size;
   });
 
-  const best = eligible[0];
-
-  // Comparaison avec les autres fenêtres
-  // pour détecter une divergence statistique.
-  const otherMedians = eligible
-    .filter(item => item.size !== best.size)
-    .map(item => item.central);
-
-  const medianAgreement = otherMedians.length
-    ? 100 - clamp(
-        (standardDeviation(otherMedians) /
-          Math.max(best.central, 1)) * 100,
-        0,
-        100
-      )
-    : 50;
-
-  const finalScore =
-    best.score * 0.80 +
-    medianAgreement * 0.20;
+  const best = evaluations[0];
 
   let light = "RED";
-  let lightLabel = "ROUGE · INSTABILITÉ";
+  let lightLabel = "ROUGE — INSTABILITÉ STATISTIQUE";
 
   if (
-    finalScore >= 80 &&
-    regime.state === "STABLE"
+    best.score >= 75 &&
+    !regime.strongChange
   ) {
     light = "GREEN";
-    lightLabel = "VERT · STABILITÉ HISTORIQUE";
+    lightLabel = "VERT — STABILITÉ HISTORIQUE";
   } else if (
-    finalScore >= 60 &&
-    regime.state !== "CHANGEMENT IMPORTANT"
+    best.score >= 50 &&
+    !regime.strongChange
   ) {
     light = "ORANGE";
-    lightLabel = "ORANGE · STABILITÉ MODÉRÉE";
+    lightLabel = "ORANGE — STABILITÉ MODÉRÉE";
   }
 
   return {
@@ -503,95 +373,203 @@ function adaptiveAnalysis(rounds) {
     central: best.central,
     low: best.low,
     high: best.high,
-    score: finalScore,
+    score: best.score,
     hitRate: best.hitRate,
+    successfulCount: best.successfulCount,
     windowSize: best.size,
     light,
     lightLabel,
-    regime
+    regime,
+    evaluations
   };
 }
 
 /* =========================================
-   ESTIMATION INDICATIVE DU TEMPS
+   FEUX LUMINEUX
+========================================= */
+
+function updateTrafficLight(light, label) {
+  ["lightGreen", "lightOrange", "lightRed"].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.remove("active");
+  });
+
+  const mapping = {
+    GREEN: "lightGreen",
+    ORANGE: "lightOrange",
+    RED: "lightRed"
+  };
+
+  if (mapping[light]) {
+    const selected = $(mapping[light]);
+    if (selected) selected.classList.add("active");
+  }
+
+  setText("lightLabel", label);
+}
+
+/* =========================================
+   ESTIMATION HORAIRE FACULTATIVE
 ========================================= */
 
 function analyseTime(rounds) {
-  const timestamps = rounds
-    .map(r => r.timestamp)
-    .filter(t => Number.isFinite(t));
+  const timedRounds = rounds
+    .filter(r => Number.isFinite(r.timestamp));
 
-  if (timestamps.length < 3) {
+  if (timedRounds.length < 6) {
     return null;
   }
 
   const intervals = [];
 
-  for (let i = 1; i < timestamps.length; i++) {
-    const difference =
-      (timestamps[i] - timestamps[i - 1]) / 1000;
+  for (let i = 1; i < timedRounds.length; i++) {
+    const seconds = (
+      timedRounds[i].timestamp -
+      timedRounds[i - 1].timestamp
+    ) / 1000;
 
-    if (difference >= 1 && difference <= 600) {
-      intervals.push(difference);
+    if (seconds >= 1 && seconds <= 600) {
+      intervals.push(seconds);
     }
   }
 
-  if (!intervals.length) return null;
+  if (intervals.length < 5) {
+    return null;
+  }
 
-  const typicalInterval = median(intervals);
-  const lastTimestamp = timestamps[timestamps.length - 1];
+  const typicalInterval = median(intervals.slice(-20));
+  const latest = timedRounds[timedRounds.length - 1].timestamp;
 
-  const projected = Math.max(
-    lastTimestamp + typicalInterval * 1000,
-    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000
-  );
-
-  return new Date(projected);
+  return {
+    latestTimestamp: latest,
+    time: Math.max(
+      latest + typicalInterval * 1000,
+      Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000
+    )
+  };
 }
 
-function updateCountdown() {
-  if (!estimatedNextTime) return;
+/* =========================================
+   AFFICHAGE SANS CANDIDAT
+========================================= */
 
-  const remaining = Math.max(
-    0,
-    Math.floor((estimatedNextTime.getTime() - Date.now()) / 1000)
+function displayNoSignal(reason) {
+  nextEstimatedTime = null;
+  lastRoundTimestamp = null;
+
+  setText("coefficient", "AUCUN SIGNAL");
+  setText("range", "--");
+  setText("estimatedTime", "--:--:--");
+  setText("countdown", "--:--:--");
+  setText("signalStatus", reason);
+
+  updateTrafficLight("NONE", "AUCUN CANDIDAT");
+}
+
+/* =========================================
+   AFFICHAGE DU CANDIDAT
+========================================= */
+
+function displaySignal(stats, timing) {
+  setText(
+    "coefficient",
+    formatMultiplier(stats.central)
   );
 
-  const hours = String(Math.floor(remaining / 3600)).padStart(2, "0");
-  const minutes = String(Math.floor((remaining % 3600) / 60)).padStart(2, "0");
-  const seconds = String(remaining % 60).padStart(2, "0");
+  setText(
+    "range",
+    formatMultiplier(stats.low) +
+    " – " +
+    formatMultiplier(stats.high)
+  );
 
-  setText("countdown", `${hours}:${minutes}:${seconds}`);
+  setText(
+    "signalStatus",
+    "Analyse de " + stats.successfulCount +
+    " manches ≥ 2.00x · Fenêtre " +
+    stats.windowSize + " manches"
+  );
 
-  if (remaining === 0) {
-    setText("countdown", "EN ATTENTE");
+  updateTrafficLight(
+    stats.light,
+    stats.lightLabel
+  );
+
+  if (timing) {
+    if (
+      lastRoundTimestamp === timing.latestTimestamp &&
+      nextEstimatedTime &&
+      nextEstimatedTime > Date.now()
+    ) {
+      timing.time = nextEstimatedTime;
+    }
+
+    nextEstimatedTime = timing.time;
+    lastRoundTimestamp = timing.latestTimestamp;
+
+    updateCountdown();
+  } else {
+    nextEstimatedTime = null;
+    lastRoundTimestamp = null;
+    setText("estimatedTime", "--:--:--");
+    setText("countdown", "--:--:--");
   }
 }
 
 /* =========================================
-   AFFICHAGE DE L'ADAPTATION
+   AFFICHAGE ADAPTATIF
 ========================================= */
 
-function displayAdaptation(result) {
-  setText(
-    "adaptationStatus",
-    result.regime.state
-  );
+function displayAdaptation(stats) {
+  setText("adaptationStatus", stats.regime.state);
 
-  let details = result.regime.description;
+  let details = stats.regime.details;
 
-  if (result.valid) {
+  if (stats.valid) {
     details +=
-      " Fenêtre sélectionnée : " +
-      result.windowSize +
-      " manches. Score de stabilité descriptif : " +
-      result.score.toFixed(1) +
-      "/100.";
+      " Fenêtre retenue : " + stats.windowSize +
+      " manches. Score descriptif : " +
+      stats.score + "/100.";
   } else {
-    details += " " + result.reason;
+    details += " " + stats.reason;
   }
 
   setText("adaptationDetails", details);
+}
+
+/* =========================================
+   COMPTE À REBOURS
+========================================= */
+
+function updateCountdown() {
+  if (!nextEstimatedTime) return;
+
+  const remaining = Math.max(
+    0,
+    Math.floor((nextEstimatedTime - Date.now()) / 1000)
+  );
+
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+  const s = remaining % 60;
+
+  const countdown = [h, m, s]
+    .map(v => String(v).padStart(2, "0"))
+    .join(":");
+
+  const time = new Date(nextEstimatedTime)
+    .toLocaleTimeString("fr-FR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
+
+  setText("estimatedTime", time);
+  setText(
+    "countdown",
+    remaining === 0 ? "ÉCHÉANCE" : countdown
+  );
 }
 
 /* =========================================
@@ -599,105 +577,97 @@ function displayAdaptation(result) {
 ========================================= */
 
 async function runAnalysis() {
-  if (analysisInProgress) return;
+  if (analysing) return;
 
-  analysisInProgress = true;
+  analysing = true;
 
   try {
     setText("signalStatus", "RÉCUPÉRATION DES DONNÉES...");
+    setText("adaptationStatus", "ANALYSE EN COURS");
 
-    const rawRounds = await getHistory();
-    const rounds = normalizeRounds(rawRounds);
+    const data = await getHistory();
+    const rounds = normalizeRounds(data);
 
     if (rounds.length < CONFIG.MIN_ROUNDS) {
       displayNoSignal(
         "Historique insuffisant : " +
-        rounds.length +
-        " manches valides."
+        rounds.length + "/" +
+        CONFIG.MIN_ROUNDS + " manches."
       );
 
       setText(
         "adaptationStatus",
-        "COLLECTE DES DONNÉES"
+        "DONNÉES INSUFFISANTES"
       );
 
       setText(
         "adaptationDetails",
-        "Minimum requis : " +
-        CONFIG.MIN_ROUNDS +
-        " manches valides."
+        "Vérifie le nombre de manches retournées par l'API."
       );
 
       return;
     }
 
-    const latestTimestamp =
-      rounds[rounds.length - 1].timestamp;
+    const stats = adaptiveAnalysis(rounds);
 
-    const newRoundDetected =
-      latestTimestamp &&
-      latestTimestamp !== lastRoundTimestamp;
+    displayAdaptation(stats);
 
-    if (newRoundDetected) {
-      lastRoundTimestamp = latestTimestamp;
-    }
+    if (!stats.valid) {
+      displayNoSignal(stats.reason);
 
-    const result = adaptiveAnalysis(rounds);
+      console.log("Fenêtres analysées :", CONFIG.WINDOWS);
+      console.log("Résultat :", stats);
 
-    displayAdaptation(result);
-
-    if (!result.valid) {
-      displayNoSignal(result.reason);
       return;
     }
 
-    displaySignal(result);
+    // L'heure est facultative :
+    // son absence ne bloque plus le signal.
+    const timing = analyseTime(rounds);
 
-    estimatedNextTime = analyseTime(rounds);
+    displaySignal(stats, timing);
 
-    if (estimatedNextTime) {
-      setText(
-        "estimatedTime",
-        formatTime(estimatedNextTime)
-      );
-      updateCountdown();
-    } else {
-      setText("estimatedTime", "--:--:--");
-      setText("countdown", "--:--:--");
-    }
+    console.log("AI CRASH ADAPTIVE ANALYSIS", {
+      totalManches: rounds.length,
+      coefficientCentral: stats.central,
+      fourchette: [stats.low, stats.high],
+      scoreDescriptif: stats.score,
+      feu: stats.light,
+      fenetre: stats.windowSize,
+      manchesSuperieuresA2: stats.successfulCount,
+      tauxHistorique: stats.hitRate,
+      evaluations: stats.evaluations
+    });
 
   } catch (error) {
-    console.error("Erreur d'analyse :", error);
+    console.error("AI CRASH BOT :", error);
 
-    setText(
-      "signalStatus",
-      "ERREUR : " + error.message
-    );
+    displayNoSignal("ERREUR : " + error.message);
+
+    setText("adaptationStatus", "ERREUR");
+    setText("adaptationDetails", error.message);
 
   } finally {
-    analysisInProgress = false;
+    analysing = false;
   }
 }
 
 /* =========================================
-   DÉMARRAGE AUTOMATIQUE
+   INITIALISATION
 ========================================= */
 
-function startBot() {
-  if (refreshInterval) clearInterval(refreshInterval);
-  if (countdownInterval) clearInterval(countdownInterval);
+function initialize() {
+  console.log("AI CRASH ADAPTIVE INTELLIGENCE démarré.");
 
   runAnalysis();
 
-  refreshInterval = setInterval(
-    runAnalysis,
-    CONFIG.REFRESH_MS
-  );
-
-  countdownInterval = setInterval(
-    updateCountdown,
-    CONFIG.COUNTDOWN_MS
-  );
+  setInterval(updateCountdown, 1000);
+  setInterval(runAnalysis, CONFIG.REFRESH_MS);
 }
 
-document.addEventListener("DOMContentLoaded", startBot);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initialize);
+} else {
+  initialize();
+        }
+     
