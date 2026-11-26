@@ -3,17 +3,16 @@
 
 /* =========================================
    AI CRASH SIGNAL BOT
-   Jeu : Lucky Jet
-   API : GameData365 via Render
+   LUCKY JET - ADAPTIVE INTELLIGENCE
 ========================================= */
 
 const CONFIG = {
   API: "https://ai-crash-signal-bot.onrender.com",
   HISTORY_LIMIT: 100,
-  RECENT_WINDOW: 20,
   REFRESH_MS: 60000,
   MIN_COEFFICIENT: 2.00,
-  MIN_PREPARATION_SECONDS: 60
+  MIN_PREPARATION_SECONDS: 60,
+  REQUEST_TIMEOUT: 15000
 };
 
 const $ = id => document.getElementById(id);
@@ -27,31 +26,41 @@ let lastRoundTimestamp = null;
 ========================================= */
 
 function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const n = sorted.length;
+  const s = [...values].sort((a,b) => a-b);
+  const n = s.length;
 
   return n % 2
-    ? sorted[Math.floor(n / 2)]
-    : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+    ? s[Math.floor(n/2)]
+    : (s[n/2-1]+s[n/2])/2;
 }
 
-function quantile(values, q) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const position = (sorted.length - 1) * q;
-  const low = Math.floor(position);
-  const high = Math.ceil(position);
+function quantile(values,q) {
+  const s = [...values].sort((a,b) => a-b);
+  const p = (s.length-1)*q;
+  const low = Math.floor(p);
+  const high = Math.ceil(p);
 
-  return sorted[low] +
-    (sorted[high] - sorted[low]) * (position - low);
+  return s[low]+(s[high]-s[low])*(p-low);
+}
+
+function average(values) {
+  return values.reduce((a,b)=>a+b,0)/values.length;
+}
+
+function standardDeviation(values) {
+  const mean = average(values);
+  return Math.sqrt(
+    average(values.map(v=>(v-mean)**2))
+  );
 }
 
 function formatMultiplier(value) {
-  return Number(value).toFixed(2) + "x";
+  return Number(value).toFixed(2)+"x";
 }
 
-function setText(id, value) {
-  const element = $(id);
-  if (element) element.textContent = value;
+function setText(id,value) {
+  const el = $(id);
+  if(el) el.textContent = value;
 }
 
 /* =========================================
@@ -61,38 +70,37 @@ function setText(id, value) {
 async function getHistory() {
   const controller = new AbortController();
 
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, 15000);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    CONFIG.REQUEST_TIMEOUT
+  );
 
   try {
     const response = await fetch(
-      CONFIG.API + "/api/history",
+      CONFIG.API+"/api/history",
       {
-        method: "GET",
-        headers: {
-          "Accept": "application/json"
-        },
-        cache: "no-store",
-        signal: controller.signal
+        method:"GET",
+        headers:{"Accept":"application/json"},
+        cache:"no-store",
+        signal:controller.signal
       }
     );
 
-    if (!response.ok) {
-      throw new Error("Erreur HTTP " + response.status);
+    if(!response.ok) {
+      throw new Error("Erreur HTTP "+response.status);
     }
 
     const data = await response.json();
 
-    if (!Array.isArray(data.rounds)) {
-      throw new Error("Historique absent de la réponse API.");
+    if(!Array.isArray(data.rounds)) {
+      throw new Error("Historique API invalide.");
     }
 
     return data;
 
-  } catch (error) {
-    if (error.name === "AbortError") {
-      throw new Error("Délai dépassé : Render ne répond pas.");
+  } catch(error) {
+    if(error.name==="AbortError") {
+      throw new Error("Délai API dépassé.");
     }
 
     throw error;
@@ -103,7 +111,7 @@ async function getHistory() {
 }
 
 /* =========================================
-   NORMALISATION DES MANCHES
+   NORMALISATION
 ========================================= */
 
 function normalizeRounds(data) {
@@ -111,216 +119,339 @@ function normalizeRounds(data) {
     .map(round => {
       let timestamp;
 
-      if (typeof round.timestamp === "number") {
-        timestamp = round.timestamp;
+      if(typeof round.timestamp==="number") {
+        timestamp=round.timestamp;
 
-        if (timestamp < 100000000000) {
-          timestamp *= 1000;
+        if(timestamp<100000000000) {
+          timestamp*=1000;
         }
       } else {
-        timestamp = new Date(round.timestamp).getTime();
+        timestamp=new Date(round.timestamp).getTime();
       }
 
       return {
-        multiplier: Number(round.multiplier),
+        multiplier:Number(round.multiplier),
         timestamp
       };
     })
-    .filter(round =>
-      Number.isFinite(round.multiplier) &&
-      round.multiplier > 0 &&
-      Number.isFinite(round.timestamp)
+    .filter(r =>
+      Number.isFinite(r.multiplier) &&
+      r.multiplier>0 &&
+      Number.isFinite(r.timestamp)
     )
-    .sort((a, b) => a.timestamp - b.timestamp)
+    .sort((a,b)=>a.timestamp-b.timestamp)
     .slice(-CONFIG.HISTORY_LIMIT);
 }
 
 /* =========================================
-   ANALYSE STATISTIQUE RENFORCÉE
+   DÉTECTION DES CHANGEMENTS STATISTIQUES
 ========================================= */
 
-function analyseStrict(rounds) {
-  if (rounds.length < CONFIG.HISTORY_LIMIT) {
-    return {
-      valid: false,
-      reason: "Historique insuffisant : 100 manches nécessaires."
-    };
+function analyseRegime(rounds) {
+  const values=rounds.map(r=>r.multiplier);
+
+  const recent=values.slice(-20);
+  const previous=values.slice(-40,-20);
+
+  if(recent.length<20 || previous.length<20) {
+    throw new Error("40 manches nécessaires pour comparer les périodes.");
   }
 
-  const all = rounds.map(r => r.multiplier);
-  const recent = all.slice(-20);
-  const previous = all.slice(-40, -20);
+  const recentMedian=median(recent);
+  const previousMedian=median(previous);
 
-  const central = median(recent);
-  const low = quantile(recent, 0.25);
-  const high = quantile(recent, 0.75);
+  const recentRate=recent.filter(
+    v=>v>=CONFIG.MIN_COEFFICIENT
+  ).length/20;
 
-  const countAbove2 = recent.filter(
-    value => value >= CONFIG.MIN_COEFFICIENT
+  const previousRate=previous.filter(
+    v=>v>=CONFIG.MIN_COEFFICIENT
+  ).length/20;
+
+  const recentVolatility=standardDeviation(recent);
+  const previousVolatility=standardDeviation(previous);
+
+  const medianChange=Math.abs(
+    recentMedian-previousMedian
+  );
+
+  const frequencyChange=Math.abs(
+    recentRate-previousRate
+  );
+
+  const volatilityRatio =
+    previousVolatility>0
+      ? recentVolatility/previousVolatility
+      : 1;
+
+  const strongChange =
+    medianChange>=0.75 ||
+    frequencyChange>=0.30 ||
+    volatilityRatio>=2.20 ||
+    volatilityRatio<=0.45;
+
+  const moderateChange =
+    medianChange>=0.35 ||
+    frequencyChange>=0.20 ||
+    volatilityRatio>=1.60 ||
+    volatilityRatio<=0.65;
+
+  let state="STABLE";
+  let details="Comportement statistique relativement stable.";
+
+  if(strongChange) {
+    state="CHANGEMENT IMPORTANT";
+    details="Variation importante détectée. Analyse récente prioritaire.";
+  } else if(moderateChange) {
+    state="CHANGEMENT DÉTECTÉ";
+    details="Variation statistique détectée. Paramètres réévalués.";
+  }
+
+  return {
+    state,
+    details,
+    recentMedian,
+    previousMedian,
+    recentRate,
+    previousRate,
+    recentVolatility,
+    previousVolatility,
+    medianChange,
+    frequencyChange,
+    volatilityRatio,
+    strongChange,
+    moderateChange
+  };
+}
+
+/* =========================================
+   MOTEUR ADAPTATIF
+========================================= */
+
+function adaptiveAnalysis(rounds) {
+  const regime=analyseRegime(rounds);
+  const values=rounds.map(r=>r.multiplier);
+
+  /*
+    En période stable : fenêtre de 30 manches.
+    En cas de changement : fenêtre récente de 20 manches.
+  */
+
+  const windowSize=regime.state==="STABLE"?30:20;
+  const sample=values.slice(-windowSize);
+
+  const central=median(sample);
+  const low=quantile(sample,0.25);
+  const high=quantile(sample,0.75);
+
+  const countAbove2=sample.filter(
+    v=>v>=CONFIG.MIN_COEFFICIENT
   ).length;
 
-  const countAbove2All = all.filter(
-    value => value >= CONFIG.MIN_COEFFICIENT
-  ).length;
+  const hitRate=countAbove2/sample.length;
 
-  const previousMedian = median(previous);
+  /*
+    Score descriptif de stabilité.
+    Ce score n'est pas une probabilité de gain.
+  */
 
-  const condition1 = central >= CONFIG.MIN_COEFFICIENT;
-  const condition2 = countAbove2 >= 8;
-  const condition3 = countAbove2All >= 30;
-  const condition4 = previousMedian >= 1.50;
+  const stabilityScore=Math.max(
+    0,
+    25-Math.min(25,regime.medianChange*15)
+      -Math.min(10,regime.frequencyChange*30)
+      -Math.min(10,Math.abs(Math.log(
+        Math.max(regime.volatilityRatio,0.01)
+      ))*8)
+  );
 
-  const valid =
-    condition1 &&
-    (condition2 || condition3) &&
-    condition4;
+  const frequencyScore=hitRate*60;
+
+  const levelScore=Math.min(
+    15,
+    Math.max(0,(central-2)*10+5)
+  );
+
+  const score=Math.round(
+    frequencyScore+stabilityScore+levelScore
+  );
+
+  const valid=
+    central>=CONFIG.MIN_COEFFICIENT;
+
+  let light="NONE";
+  let lightLabel="AUCUN CANDIDAT";
+
+  if(valid) {
+    if(score>=80 && !regime.strongChange) {
+      light="GREEN";
+      lightLabel="VERT — STABILITÉ ÉLEVÉE";
+    } else if(score>=60 && !regime.strongChange) {
+      light="ORANGE";
+      lightLabel="ORANGE — STABILITÉ MODÉRÉE";
+    } else {
+      light="RED";
+      lightLabel="ROUGE — RISQUE STATISTIQUE ÉLEVÉ";
+    }
+  }
 
   return {
     valid,
     central,
     low,
     high,
-    countAbove2,
-    countAbove2All,
-    previousMedian
+    score,
+    hitRate,
+    windowSize,
+    light,
+    lightLabel,
+    regime
   };
 }
 
 /* =========================================
-   ESTIMATION TEMPORELLE INDICATIVE
+   FEU LUMINEUX
+========================================= */
+
+function updateTrafficLight(light,label) {
+  ["lightGreen","lightOrange","lightRed"].forEach(id=>{
+    const el=$(id);
+    if(el) el.classList.remove("active");
+  });
+
+  const mapping={
+    GREEN:"lightGreen",
+    ORANGE:"lightOrange",
+    RED:"lightRed"
+  };
+
+  if(mapping[light]) {
+    $(mapping[light]).classList.add("active");
+  }
+
+  setText("lightLabel",label);
+}
+
+/* =========================================
+   ESTIMATION HORAIRE INDICATIVE
 ========================================= */
 
 function analyseTime(rounds) {
-  const intervals = [];
+  const intervals=[];
 
-  for (let i = 1; i < rounds.length; i++) {
-    const seconds =
-      (rounds[i].timestamp - rounds[i - 1].timestamp) / 1000;
+  for(let i=1;i<rounds.length;i++) {
+    const seconds=(
+      rounds[i].timestamp-rounds[i-1].timestamp
+    )/1000;
 
-    if (seconds >= 1 && seconds <= 600) {
+    if(seconds>=1 && seconds<=600) {
       intervals.push(seconds);
     }
   }
 
-  if (intervals.length < 5) {
+  if(intervals.length<5) {
     throw new Error("Données temporelles insuffisantes.");
   }
 
-  const typicalInterval = median(intervals.slice(-20));
-  const latestTimestamp = rounds[rounds.length - 1].timestamp;
-
-  const estimatedTime = Math.max(
-    latestTimestamp + typicalInterval * 1000,
-    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000
-  );
+  const typicalInterval=median(intervals.slice(-20));
+  const latest=rounds[rounds.length-1].timestamp;
 
   return {
-    time: estimatedTime,
-    latestTimestamp
+    latestTimestamp:latest,
+    time:Date.now()+
+      Math.max(
+        CONFIG.MIN_PREPARATION_SECONDS,
+        typicalInterval
+      )*1000
   };
 }
 
 /* =========================================
-   AFFICHAGE SANS SIGNAL
+   AFFICHAGE SANS CANDIDAT
 ========================================= */
 
 function displayNoSignal(reason) {
-  nextEstimatedTime = null;
-  lastRoundTimestamp = null;
+  nextEstimatedTime=null;
+  lastRoundTimestamp=null;
 
-  setText("coefficient", "AUCUN SIGNAL");
-  setText("range", "--");
-  setText("estimatedTime", "--:--:--");
-  setText("countdown", "--:--");
-  setText("signalStatus", reason);
+  setText("coefficient","AUCUN SIGNAL");
+  setText("range","--");
+  setText("estimatedTime","--:--:--");
+  setText("countdown","--:--:--");
 
-  setText("nextCoefficient", "EN ATTENTE");
-  setText("nextRange", "--");
-  setText("nextTime", "--:--:--");
-  setText("nextCountdown", "--:--");
-  setText("nextStatus", "Aucune configuration retenue.");
+  setText("signalStatus",reason);
+
+  updateTrafficLight("NONE","AUCUN CANDIDAT");
 }
 
 /* =========================================
-   AFFICHAGE DU SIGNAL
+   AFFICHAGE DU CANDIDAT
 ========================================= */
 
-function displaySignal(stats, timing) {
-  setText("coefficient", formatMultiplier(stats.central));
+function displaySignal(stats,timing) {
+  setText("coefficient",formatMultiplier(stats.central));
 
   setText(
     "range",
-    formatMultiplier(stats.low) +
-    " – " +
+    formatMultiplier(stats.low)+" – "+
     formatMultiplier(stats.high)
   );
-
-  setText("nextCoefficient", formatMultiplier(stats.central));
-
-  setText(
-    "nextRange",
-    formatMultiplier(stats.low) +
-    " – " +
-    formatMultiplier(stats.high)
-  );
-
-  nextEstimatedTime = timing.time;
-  lastRoundTimestamp = timing.latestTimestamp;
 
   setText(
     "signalStatus",
-    "Candidat statistique détecté · Référence ≥ 2.00x"
+    "Candidat statistique détecté · Fenêtre "+
+    stats.windowSize+" manches"
   );
 
-  setText(
-    "nextStatus",
-    "Estimation expérimentale, non garantie."
+  updateTrafficLight(
+    stats.light,
+    stats.lightLabel
   );
+
+  nextEstimatedTime=timing.time;
+  lastRoundTimestamp=timing.latestTimestamp;
 
   updateCountdown();
+}
+
+/* =========================================
+   AFFICHAGE DE L'ADAPTATION
+========================================= */
+
+function displayAdaptation(regime) {
+  setText("adaptationStatus",regime.state);
+  setText("adaptationDetails",regime.details);
 }
 
 /* =========================================
    COMPTE À REBOURS
 ========================================= */
 
-function formatRemaining(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-
-  return [hours, minutes, secs]
-    .map(value => String(value).padStart(2, "0"))
-    .join(":");
-}
-
 function updateCountdown() {
-  if (!nextEstimatedTime) return;
+  if(!nextEstimatedTime) return;
 
-  const remaining = Math.max(
+  const remaining=Math.max(
     0,
-    Math.floor((nextEstimatedTime - Date.now()) / 1000)
+    Math.floor((nextEstimatedTime-Date.now())/1000)
   );
 
-  const time = new Date(nextEstimatedTime).toLocaleTimeString(
-    "fr-FR",
-    {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    }
-  );
+  const time=new Date(nextEstimatedTime)
+    .toLocaleTimeString("fr-FR",{
+      hour:"2-digit",
+      minute:"2-digit",
+      second:"2-digit",
+      hour12:false
+    });
 
-  setText("estimatedTime", time);
-  setText("nextTime", time);
+  const h=Math.floor(remaining/3600);
+  const m=Math.floor((remaining%3600)/60);
+  const s=remaining%60;
 
-  const countdown = remaining === 0
-    ? "ÉCHÉANCE"
-    : formatRemaining(remaining);
+  const countdown=[h,m,s]
+    .map(v=>String(v).padStart(2,"0"))
+    .join(":");
 
-  setText("countdown", countdown);
-  setText("nextCountdown", countdown);
+  setText("estimatedTime",time);
+  setText("countdown",remaining===0?"ÉCHÉANCE":countdown);
 }
 
 /* =========================================
@@ -328,64 +459,82 @@ function updateCountdown() {
 ========================================= */
 
 async function runAnalysis() {
-  if (analysing) return;
+  if(analysing) return;
 
-  analysing = true;
+  analysing=true;
 
   try {
-    setText("signalStatus", "Récupération des données...");
-    setText("nextStatus", "Analyse des 100 dernières manches...");
+    setText("signalStatus","Récupération des données...");
+    setText("adaptationStatus","ANALYSE EN COURS");
 
-    const data = await getHistory();
-    const rounds = normalizeRounds(data);
+    const data=await getHistory();
+    const rounds=normalizeRounds(data);
 
-    if (rounds.length < CONFIG.HISTORY_LIMIT) {
+    if(rounds.length<40) {
       displayNoSignal(
-        "Historique insuffisant : " +
-        rounds.length +
-        "/100 manches."
+        "Historique insuffisant : "+
+        rounds.length+"/40 manches."
       );
+
+      setText(
+        "adaptationStatus",
+        "DONNÉES INSUFFISANTES"
+      );
+
       return;
     }
 
-    const stats = analyseStrict(rounds);
+    const stats=adaptiveAnalysis(rounds);
 
-    if (!stats.valid) {
+    displayAdaptation(stats.regime);
+
+    if(!stats.valid) {
       displayNoSignal(
-        "Aucun candidat : filtre statistique non satisfait."
+        "Aucun candidat : coefficient central inférieur à 2.00x."
       );
-      console.log("Critères analysés :", stats);
+
+      console.log("Analyse adaptative :",stats);
       return;
     }
 
-    const timing = analyseTime(rounds);
+    const timing=analyseTime(rounds);
 
-    if (
-      lastRoundTimestamp === timing.latestTimestamp &&
+    /*
+      Garder le même horaire tant qu'aucune
+      nouvelle manche n'est arrivée.
+    */
+
+    if(
+      lastRoundTimestamp===timing.latestTimestamp &&
       nextEstimatedTime &&
-      nextEstimatedTime > Date.now()
+      nextEstimatedTime>Date.now()
     ) {
-      timing.time = nextEstimatedTime;
+      timing.time=nextEstimatedTime;
     }
 
-    displaySignal(stats, timing);
+    displaySignal(stats,timing);
 
-    console.log("ANALYSE TERMINÉE", {
-      nombreManches: rounds.length,
-      mediane20: stats.central,
-      quartile25: stats.low,
-      quartile75: stats.high,
-      manchesSuperieures2x: stats.countAbove2,
-      totalSuperieures2x: stats.countAbove2All,
-      medianePrecedente: stats.previousMedian
+    console.log("AI CRASH ADAPTIVE ANALYSIS",{
+      manches:rounds.length,
+      coefficientCentral:stats.central,
+      fourchetteBasse:stats.low,
+      fourchetteHaute:stats.high,
+      scoreDescriptif:stats.score,
+      feu:stats.light,
+      adaptation:stats.regime.state,
+      fenetreUtilisee:stats.windowSize
     });
 
-  } catch (error) {
-    console.error("ERREUR AI CRASH BOT :", error);
-    displayNoSignal("ERREUR : " + error.message);
+  } catch(error) {
+    console.error("AI CRASH BOT :",error);
+
+    displayNoSignal("ERREUR : "+error.message);
+
+    setText("adaptationStatus","CONNEXION / ANALYSE");
+    setText("adaptationDetails",error.message);
 
   } finally {
-    analysing = false;
+    analysing=false;
   }
 }
 
@@ -394,16 +543,17 @@ async function runAnalysis() {
 ========================================= */
 
 function initialize() {
-  console.log("AI CRASH SIGNAL BOT démarré.");
+  console.log("AI CRASH ADAPTIVE INTELLIGENCE démarré.");
 
   runAnalysis();
 
-  setInterval(updateCountdown, 1000);
-  setInterval(runAnalysis, CONFIG.REFRESH_MS);
+  setInterval(updateCountdown,1000);
+  setInterval(runAnalysis,CONFIG.REFRESH_MS);
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initialize);
+if(document.readyState==="loading") {
+  document.addEventListener("DOMContentLoaded",initialize);
 } else {
   initialize();
-}
+     }
+     
