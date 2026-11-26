@@ -3,68 +3,158 @@
 
 /* =========================================
    AI CRASH SIGNAL BOT
-   LUCKY JET - ADAPTIVE INTELLIGENCE
+   Jeu : Lucky Jet
+   API : GameData365
+   Moteur : Analyse statistique adaptative
+   Fenêtres : 10 / 20 / 30 / 50 / 100
 ========================================= */
 
 const CONFIG = {
-  API: "https://ai-crash-signal-bot.onrender.com",
+  API_URL: "https://ai-crash-signal-bot.onrender.com/api/history",
   HISTORY_LIMIT: 100,
   REFRESH_MS: 60000,
+  COUNTDOWN_MS: 1000,
   MIN_COEFFICIENT: 2.00,
+  MIN_ROUNDS: 40,
   MIN_PREPARATION_SECONDS: 60,
-  REQUEST_TIMEOUT: 15000
+  REQUEST_TIMEOUT: 15000,
+  WINDOWS: [10, 20, 30, 50, 100]
 };
 
-const $ = id => document.getElementById(id);
-
-let analysing = false;
-let nextEstimatedTime = null;
 let lastRoundTimestamp = null;
+let estimatedNextTime = null;
+let countdownInterval = null;
+let refreshInterval = null;
+let analysisInProgress = false;
 
 /* =========================================
    OUTILS MATHÉMATIQUES
 ========================================= */
 
-function median(values) {
-  const s = [...values].sort((a,b) => a-b);
-  const n = s.length;
-
-  return n % 2
-    ? s[Math.floor(n/2)]
-    : (s[n/2-1]+s[n/2])/2;
-}
-
-function quantile(values,q) {
-  const s = [...values].sort((a,b) => a-b);
-  const p = (s.length-1)*q;
-  const low = Math.floor(p);
-  const high = Math.ceil(p);
-
-  return s[low]+(s[high]-s[low])*(p-low);
-}
-
 function average(values) {
-  return values.reduce((a,b)=>a+b,0)/values.length;
+  if (!values.length) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function median(values) {
+  if (!values.length) return 0;
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function quantile(values, q) {
+  if (!values.length) return 0;
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * q;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+
+  if (lower === upper) return sorted[lower];
+
+  return sorted[lower] +
+    (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
 function standardDeviation(values) {
-  const mean = average(values);
-  return Math.sqrt(
-    average(values.map(v=>(v-mean)**2))
+  if (values.length < 2) return 0;
+
+  const avg = average(values);
+  const variance = average(
+    values.map(value => Math.pow(value - avg, 2))
   );
+
+  return Math.sqrt(variance);
 }
 
-function formatMultiplier(value) {
-  return Number(value).toFixed(2)+"x";
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
-function setText(id,value) {
-  const el = $(id);
-  if(el) el.textContent = value;
+function formatCoefficient(value) {
+  return Number(value).toFixed(2) + "x";
+}
+
+function formatTime(date) {
+  return date.toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
 /* =========================================
-   CONNEXION API
+   AFFICHAGE
+========================================= */
+
+function setText(id, value) {
+  const element = document.getElementById(id);
+  if (element) element.textContent = value;
+}
+
+function setLight(activeLight) {
+  ["lightGreen", "lightOrange", "lightRed"].forEach(id => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.classList.remove("active", "on");
+    }
+  });
+
+  if (!activeLight) return;
+
+  const selected = document.getElementById(activeLight);
+  if (selected) {
+    selected.classList.add("active");
+  }
+}
+
+function displayNoSignal(message) {
+  setText("coefficient", "AUCUN SIGNAL");
+  setText("range", "--");
+  setText("lightLabel", "AUCUN CANDIDAT");
+  setText("estimatedTime", "--:--:--");
+  setText("countdown", "--:--:--");
+  setText("signalStatus", message);
+
+  setLight(null);
+}
+
+function displaySignal(result) {
+  setText(
+    "coefficient",
+    formatCoefficient(result.central)
+  );
+
+  setText(
+    "range",
+    formatCoefficient(result.low) +
+    " – " +
+    formatCoefficient(result.high)
+  );
+
+  setText("lightLabel", result.lightLabel);
+
+  setText(
+    "signalStatus",
+    "CANDIDAT STATISTIQUE IDENTIFIÉ"
+  );
+
+  if (result.light === "GREEN") {
+    setLight("lightGreen");
+  } else if (result.light === "ORANGE") {
+    setLight("lightOrange");
+  } else {
+    setLight("lightRed");
+  }
+}
+
+/* =========================================
+   RÉCUPÉRATION DES DONNÉES
 ========================================= */
 
 async function getHistory() {
@@ -77,231 +167,345 @@ async function getHistory() {
 
   try {
     const response = await fetch(
-      CONFIG.API+"/api/history",
+      CONFIG.API_URL + "?limit=" + CONFIG.HISTORY_LIMIT,
       {
-        method:"GET",
-        headers:{"Accept":"application/json"},
-        cache:"no-store",
-        signal:controller.signal
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal
       }
     );
 
-    if(!response.ok) {
-      throw new Error("Erreur HTTP "+response.status);
+    if (!response.ok) {
+      throw new Error("Erreur API : " + response.status);
     }
 
     const data = await response.json();
 
-    if(!Array.isArray(data.rounds)) {
-      throw new Error("Historique API invalide.");
+    const rounds = Array.isArray(data)
+      ? data
+      : data.rounds || data.history || data.results || [];
+
+    if (!Array.isArray(rounds) || rounds.length === 0) {
+      throw new Error("Aucune manche reçue.");
     }
 
-    return data;
-
-  } catch(error) {
-    if(error.name==="AbortError") {
-      throw new Error("Délai API dépassé.");
-    }
-
-    throw error;
-
+    return rounds;
   } finally {
     clearTimeout(timeout);
   }
 }
 
 /* =========================================
-   NORMALISATION
+   NORMALISATION DES MANCHES
 ========================================= */
 
-function normalizeRounds(data) {
-  return data.rounds
-    .map(round => {
-      let timestamp;
+function normalizeRounds(rawRounds) {
+  const normalized = [];
 
-      if(typeof round.timestamp==="number") {
-        timestamp=round.timestamp;
+  for (const round of rawRounds) {
+    let multiplier = null;
 
-        if(timestamp<100000000000) {
-          timestamp*=1000;
+    if (typeof round === "number") {
+      multiplier = round;
+    } else if (typeof round === "string") {
+      multiplier = parseFloat(round);
+    } else if (round && typeof round === "object") {
+      const possibleValues = [
+        round.multiplier,
+        round.coefficient,
+        round.crash_point,
+        round.crashPoint,
+        round.result,
+        round.value,
+        round.x
+      ];
+
+      for (const value of possibleValues) {
+        if (value !== undefined && value !== null) {
+          multiplier = parseFloat(value);
+          if (Number.isFinite(multiplier)) break;
         }
-      } else {
-        timestamp=new Date(round.timestamp).getTime();
       }
+    }
 
-      return {
-        multiplier:Number(round.multiplier),
-        timestamp
-      };
-    })
-    .filter(r =>
-      Number.isFinite(r.multiplier) &&
-      r.multiplier>0 &&
-      Number.isFinite(r.timestamp)
-    )
-    .sort((a,b)=>a.timestamp-b.timestamp)
-    .slice(-CONFIG.HISTORY_LIMIT);
+    if (
+      !Number.isFinite(multiplier) ||
+      multiplier < 1
+    ) {
+      continue;
+    }
+
+    let timestamp = null;
+
+    if (round && typeof round === "object") {
+      const possibleDates = [
+        round.timestamp,
+        round.created_at,
+        round.createdAt,
+        round.date,
+        round.time,
+        round.started_at
+      ];
+
+      for (const value of possibleDates) {
+        if (value === undefined || value === null) continue;
+
+        if (typeof value === "number") {
+          timestamp = value < 1000000000000
+            ? value * 1000
+            : value;
+        } else {
+          const parsed = Date.parse(value);
+          if (Number.isFinite(parsed)) timestamp = parsed;
+        }
+
+        if (timestamp) break;
+      }
+    }
+
+    normalized.push({
+      multiplier,
+      timestamp
+    });
+  }
+
+  normalized.sort((a, b) => {
+    if (a.timestamp && b.timestamp) {
+      return a.timestamp - b.timestamp;
+    }
+    return 0;
+  });
+
+  return normalized.slice(-CONFIG.HISTORY_LIMIT);
 }
 
 /* =========================================
-   DÉTECTION DES CHANGEMENTS STATISTIQUES
+   ANALYSE DES CHANGEMENTS STATISTIQUES
 ========================================= */
 
 function analyseRegime(rounds) {
-  const values=rounds.map(r=>r.multiplier);
-
-  const recent=values.slice(-20);
-  const previous=values.slice(-40,-20);
-
-  if(recent.length<20 || previous.length<20) {
-    throw new Error("40 manches nécessaires pour comparer les périodes.");
+  if (rounds.length < 40) {
+    return {
+      state: "DONNÉES INSUFFISANTES",
+      description: "Collecte statistique en cours."
+    };
   }
 
-  const recentMedian=median(recent);
-  const previousMedian=median(previous);
+  const values = rounds.map(r => r.multiplier);
 
-  const recentRate=recent.filter(
-    v=>v>=CONFIG.MIN_COEFFICIENT
-  ).length/20;
+  const recent = values.slice(-20);
+  const previous = values.slice(-40, -20);
 
-  const previousRate=previous.filter(
-    v=>v>=CONFIG.MIN_COEFFICIENT
-  ).length/20;
+  const recentMedian = median(recent);
+  const previousMedian = median(previous);
 
-  const recentVolatility=standardDeviation(recent);
-  const previousVolatility=standardDeviation(previous);
+  const recentFrequency =
+    recent.filter(v => v >= 2).length / recent.length;
 
-  const medianChange=Math.abs(
-    recentMedian-previousMedian
+  const previousFrequency =
+    previous.filter(v => v >= 2).length / previous.length;
+
+  const recentVolatility = standardDeviation(recent);
+  const previousVolatility = standardDeviation(previous);
+
+  const medianDifference = Math.abs(
+    recentMedian - previousMedian
   );
 
-  const frequencyChange=Math.abs(
-    recentRate-previousRate
+  const frequencyDifference = Math.abs(
+    recentFrequency - previousFrequency
   );
 
-  const volatilityRatio =
-    previousVolatility>0
-      ? recentVolatility/previousVolatility
-      : 1;
+  const volatilityRatio = previousVolatility > 0
+    ? recentVolatility / previousVolatility
+    : 1;
 
-  const strongChange =
-    medianChange>=0.75 ||
-    frequencyChange>=0.30 ||
-    volatilityRatio>=2.20 ||
-    volatilityRatio<=0.45;
+  if (
+    medianDifference >= 0.75 ||
+    frequencyDifference >= 0.30 ||
+    volatilityRatio >= 2.20 ||
+    volatilityRatio <= 0.45
+  ) {
+    return {
+      state: "CHANGEMENT IMPORTANT",
+      description: "Variation importante détectée. Analyse récente prioritaire."
+    };
+  }
 
-  const moderateChange =
-    medianChange>=0.35 ||
-    frequencyChange>=0.20 ||
-    volatilityRatio>=1.60 ||
-    volatilityRatio<=0.65;
-
-  let state="STABLE";
-  let details="Comportement statistique relativement stable.";
-
-  if(strongChange) {
-    state="CHANGEMENT IMPORTANT";
-    details="Variation importante détectée. Analyse récente prioritaire.";
-  } else if(moderateChange) {
-    state="CHANGEMENT DÉTECTÉ";
-    details="Variation statistique détectée. Paramètres réévalués.";
+  if (
+    medianDifference >= 0.35 ||
+    frequencyDifference >= 0.20 ||
+    volatilityRatio >= 1.60 ||
+    volatilityRatio <= 0.65
+  ) {
+    return {
+      state: "CHANGEMENT DÉTECTÉ",
+      description: "Distribution en évolution. Adaptation des fenêtres."
+    };
   }
 
   return {
-    state,
-    details,
-    recentMedian,
-    previousMedian,
-    recentRate,
-    previousRate,
-    recentVolatility,
-    previousVolatility,
-    medianChange,
-    frequencyChange,
-    volatilityRatio,
-    strongChange,
-    moderateChange
+    state: "STABLE",
+    description: "Distribution récente relativement stable."
   };
 }
 
 /* =========================================
-   MOTEUR ADAPTATIF
+   ÉVALUATION DE CHAQUE FENÊTRE
 ========================================= */
 
-function adaptiveAnalysis(rounds) {
-  const regime=analyseRegime(rounds);
-  const values=rounds.map(r=>r.multiplier);
+function evaluateWindow(rounds, size) {
+  if (rounds.length < size) return null;
 
-  /*
-    En période stable : fenêtre de 30 manches.
-    En cas de changement : fenêtre récente de 20 manches.
-  */
+  const sample = rounds
+    .slice(-size)
+    .map(r => r.multiplier);
 
-  const windowSize=regime.state==="STABLE"?30:20;
-  const sample=values.slice(-windowSize);
+  const central = median(sample);
+  const low = quantile(sample, 0.25);
+  const high = quantile(sample, 0.75);
 
-  const central=median(sample);
-  const low=quantile(sample,0.25);
-  const high=quantile(sample,0.75);
+  const hitRate =
+    sample.filter(v => v >= 2).length / size;
 
-  const countAbove2=sample.filter(
-    v=>v>=CONFIG.MIN_COEFFICIENT
-  ).length;
+  const deviation = standardDeviation(sample);
 
-  const hitRate=countAbove2/sample.length;
+  const relativeSpread = central > 0
+    ? (high - low) / central
+    : 1;
 
-  /*
-    Score descriptif de stabilité.
-    Ce score n'est pas une probabilité de gain.
-  */
+  const relativeDeviation = central > 0
+    ? deviation / central
+    : 1;
 
-  const stabilityScore=Math.max(
+  const stabilityScore = clamp(
+    100 - relativeSpread * 100,
     0,
-    25-Math.min(25,regime.medianChange*15)
-      -Math.min(10,regime.frequencyChange*30)
-      -Math.min(10,Math.abs(Math.log(
-        Math.max(regime.volatilityRatio,0.01)
-      ))*8)
+    100
   );
 
-  const frequencyScore=hitRate*60;
-
-  const levelScore=Math.min(
-    15,
-    Math.max(0,(central-2)*10+5)
+  const volatilityScore = clamp(
+    100 - relativeDeviation * 70,
+    0,
+    100
   );
 
-  const score=Math.round(
-    frequencyScore+stabilityScore+levelScore
-  );
+  const frequencyScore = hitRate * 100;
 
-  const valid=
-    central>=CONFIG.MIN_COEFFICIENT;
+  const sampleScore = size === 10 ? 50 :
+    size === 20 ? 65 :
+    size === 30 ? 75 :
+    size === 50 ? 90 : 100;
 
-  let light="NONE";
-  let lightLabel="AUCUN CANDIDAT";
-
-  if(valid) {
-    if(score>=80 && !regime.strongChange) {
-      light="GREEN";
-      lightLabel="VERT — STABILITÉ ÉLEVÉE";
-    } else if(score>=60 && !regime.strongChange) {
-      light="ORANGE";
-      lightLabel="ORANGE — STABILITÉ MODÉRÉE";
-    } else {
-      light="RED";
-      lightLabel="ROUGE — RISQUE STATISTIQUE ÉLEVÉ";
-    }
-  }
+  const score =
+    stabilityScore * 0.40 +
+    volatilityScore * 0.25 +
+    frequencyScore * 0.20 +
+    sampleScore * 0.15;
 
   return {
-    valid,
+    size,
     central,
     low,
     high,
-    score,
     hitRate,
-    windowSize,
+    deviation,
+    stabilityScore,
+    score
+  };
+}
+
+/* =========================================
+   SÉLECTION ADAPTATIVE
+========================================= */
+
+function adaptiveAnalysis(rounds) {
+  const regime = analyseRegime(rounds);
+
+  const evaluations = CONFIG.WINDOWS
+    .map(size => evaluateWindow(rounds, size))
+    .filter(Boolean);
+
+  if (!evaluations.length) {
+    return {
+      valid: false,
+      regime,
+      reason: "Historique insuffisant."
+    };
+  }
+
+  // On conserve uniquement les fenêtres dont
+  // le coefficient central atteint 2.00x.
+  const eligible = evaluations.filter(
+    item => item.central >= CONFIG.MIN_COEFFICIENT
+  );
+
+  if (!eligible.length) {
+    return {
+      valid: false,
+      regime,
+      evaluations,
+      reason: "Aucun coefficient central ne satisfait le seuil de 2.00x."
+    };
+  }
+
+  // La fenêtre est choisie selon la stabilité
+  // et la qualité statistique, pas selon le
+  // coefficient central le plus élevé.
+  eligible.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+
+    return b.size - a.size;
+  });
+
+  const best = eligible[0];
+
+  // Comparaison avec les autres fenêtres
+  // pour détecter une divergence statistique.
+  const otherMedians = eligible
+    .filter(item => item.size !== best.size)
+    .map(item => item.central);
+
+  const medianAgreement = otherMedians.length
+    ? 100 - clamp(
+        (standardDeviation(otherMedians) /
+          Math.max(best.central, 1)) * 100,
+        0,
+        100
+      )
+    : 50;
+
+  const finalScore =
+    best.score * 0.80 +
+    medianAgreement * 0.20;
+
+  let light = "RED";
+  let lightLabel = "ROUGE · INSTABILITÉ";
+
+  if (
+    finalScore >= 80 &&
+    regime.state === "STABLE"
+  ) {
+    light = "GREEN";
+    lightLabel = "VERT · STABILITÉ HISTORIQUE";
+  } else if (
+    finalScore >= 60 &&
+    regime.state !== "CHANGEMENT IMPORTANT"
+  ) {
+    light = "ORANGE";
+    lightLabel = "ORANGE · STABILITÉ MODÉRÉE";
+  }
+
+  return {
+    valid: true,
+    central: best.central,
+    low: best.low,
+    high: best.high,
+    score: finalScore,
+    hitRate: best.hitRate,
+    windowSize: best.size,
     light,
     lightLabel,
     regime
@@ -309,149 +513,85 @@ function adaptiveAnalysis(rounds) {
 }
 
 /* =========================================
-   FEU LUMINEUX
-========================================= */
-
-function updateTrafficLight(light,label) {
-  ["lightGreen","lightOrange","lightRed"].forEach(id=>{
-    const el=$(id);
-    if(el) el.classList.remove("active");
-  });
-
-  const mapping={
-    GREEN:"lightGreen",
-    ORANGE:"lightOrange",
-    RED:"lightRed"
-  };
-
-  if(mapping[light]) {
-    $(mapping[light]).classList.add("active");
-  }
-
-  setText("lightLabel",label);
-}
-
-/* =========================================
-   ESTIMATION HORAIRE INDICATIVE
+   ESTIMATION INDICATIVE DU TEMPS
 ========================================= */
 
 function analyseTime(rounds) {
-  const intervals=[];
+  const timestamps = rounds
+    .map(r => r.timestamp)
+    .filter(t => Number.isFinite(t));
 
-  for(let i=1;i<rounds.length;i++) {
-    const seconds=(
-      rounds[i].timestamp-rounds[i-1].timestamp
-    )/1000;
+  if (timestamps.length < 3) {
+    return null;
+  }
 
-    if(seconds>=1 && seconds<=600) {
-      intervals.push(seconds);
+  const intervals = [];
+
+  for (let i = 1; i < timestamps.length; i++) {
+    const difference =
+      (timestamps[i] - timestamps[i - 1]) / 1000;
+
+    if (difference >= 1 && difference <= 600) {
+      intervals.push(difference);
     }
   }
 
-  if(intervals.length<5) {
-    throw new Error("Données temporelles insuffisantes.");
+  if (!intervals.length) return null;
+
+  const typicalInterval = median(intervals);
+  const lastTimestamp = timestamps[timestamps.length - 1];
+
+  const projected = Math.max(
+    lastTimestamp + typicalInterval * 1000,
+    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000
+  );
+
+  return new Date(projected);
+}
+
+function updateCountdown() {
+  if (!estimatedNextTime) return;
+
+  const remaining = Math.max(
+    0,
+    Math.floor((estimatedNextTime.getTime() - Date.now()) / 1000)
+  );
+
+  const hours = String(Math.floor(remaining / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((remaining % 3600) / 60)).padStart(2, "0");
+  const seconds = String(remaining % 60).padStart(2, "0");
+
+  setText("countdown", `${hours}:${minutes}:${seconds}`);
+
+  if (remaining === 0) {
+    setText("countdown", "EN ATTENTE");
   }
-
-  const typicalInterval=median(intervals.slice(-20));
-  const latest=rounds[rounds.length-1].timestamp;
-
-  return {
-    latestTimestamp:latest,
-    time:Date.now()+
-      Math.max(
-        CONFIG.MIN_PREPARATION_SECONDS,
-        typicalInterval
-      )*1000
-  };
-}
-
-/* =========================================
-   AFFICHAGE SANS CANDIDAT
-========================================= */
-
-function displayNoSignal(reason) {
-  nextEstimatedTime=null;
-  lastRoundTimestamp=null;
-
-  setText("coefficient","AUCUN SIGNAL");
-  setText("range","--");
-  setText("estimatedTime","--:--:--");
-  setText("countdown","--:--:--");
-
-  setText("signalStatus",reason);
-
-  updateTrafficLight("NONE","AUCUN CANDIDAT");
-}
-
-/* =========================================
-   AFFICHAGE DU CANDIDAT
-========================================= */
-
-function displaySignal(stats,timing) {
-  setText("coefficient",formatMultiplier(stats.central));
-
-  setText(
-    "range",
-    formatMultiplier(stats.low)+" – "+
-    formatMultiplier(stats.high)
-  );
-
-  setText(
-    "signalStatus",
-    "Candidat statistique détecté · Fenêtre "+
-    stats.windowSize+" manches"
-  );
-
-  updateTrafficLight(
-    stats.light,
-    stats.lightLabel
-  );
-
-  nextEstimatedTime=timing.time;
-  lastRoundTimestamp=timing.latestTimestamp;
-
-  updateCountdown();
 }
 
 /* =========================================
    AFFICHAGE DE L'ADAPTATION
 ========================================= */
 
-function displayAdaptation(regime) {
-  setText("adaptationStatus",regime.state);
-  setText("adaptationDetails",regime.details);
-}
-
-/* =========================================
-   COMPTE À REBOURS
-========================================= */
-
-function updateCountdown() {
-  if(!nextEstimatedTime) return;
-
-  const remaining=Math.max(
-    0,
-    Math.floor((nextEstimatedTime-Date.now())/1000)
+function displayAdaptation(result) {
+  setText(
+    "adaptationStatus",
+    result.regime.state
   );
 
-  const time=new Date(nextEstimatedTime)
-    .toLocaleTimeString("fr-FR",{
-      hour:"2-digit",
-      minute:"2-digit",
-      second:"2-digit",
-      hour12:false
-    });
+  let details = result.regime.description;
 
-  const h=Math.floor(remaining/3600);
-  const m=Math.floor((remaining%3600)/60);
-  const s=remaining%60;
+  if (result.valid) {
+    details +=
+      " Fenêtre sélectionnée : " +
+      result.windowSize +
+      " manches. Score de stabilité descriptif : " +
+      result.score.toFixed(1) +
+      "/100.";
+  } else {
+    details += " " + result.reason;
+  }
 
-  const countdown=[h,m,s]
-    .map(v=>String(v).padStart(2,"0"))
-    .join(":");
-
-  setText("estimatedTime",time);
-  setText("countdown",remaining===0?"ÉCHÉANCE":countdown);
+  setText("adaptationDetails", details);
 }
 
 /* =========================================
@@ -459,101 +599,105 @@ function updateCountdown() {
 ========================================= */
 
 async function runAnalysis() {
-  if(analysing) return;
+  if (analysisInProgress) return;
 
-  analysing=true;
+  analysisInProgress = true;
 
   try {
-    setText("signalStatus","Récupération des données...");
-    setText("adaptationStatus","ANALYSE EN COURS");
+    setText("signalStatus", "RÉCUPÉRATION DES DONNÉES...");
 
-    const data=await getHistory();
-    const rounds=normalizeRounds(data);
+    const rawRounds = await getHistory();
+    const rounds = normalizeRounds(rawRounds);
 
-    if(rounds.length<40) {
+    if (rounds.length < CONFIG.MIN_ROUNDS) {
       displayNoSignal(
-        "Historique insuffisant : "+
-        rounds.length+"/40 manches."
+        "Historique insuffisant : " +
+        rounds.length +
+        " manches valides."
       );
 
       setText(
         "adaptationStatus",
-        "DONNÉES INSUFFISANTES"
+        "COLLECTE DES DONNÉES"
+      );
+
+      setText(
+        "adaptationDetails",
+        "Minimum requis : " +
+        CONFIG.MIN_ROUNDS +
+        " manches valides."
       );
 
       return;
     }
 
-    const stats=adaptiveAnalysis(rounds);
+    const latestTimestamp =
+      rounds[rounds.length - 1].timestamp;
 
-    displayAdaptation(stats.regime);
+    const newRoundDetected =
+      latestTimestamp &&
+      latestTimestamp !== lastRoundTimestamp;
 
-    if(!stats.valid) {
-      displayNoSignal(
-        "Aucun candidat : coefficient central inférieur à 2.00x."
-      );
+    if (newRoundDetected) {
+      lastRoundTimestamp = latestTimestamp;
+    }
 
-      console.log("Analyse adaptative :",stats);
+    const result = adaptiveAnalysis(rounds);
+
+    displayAdaptation(result);
+
+    if (!result.valid) {
+      displayNoSignal(result.reason);
       return;
     }
 
-    const timing=analyseTime(rounds);
+    displaySignal(result);
 
-    /*
-      Garder le même horaire tant qu'aucune
-      nouvelle manche n'est arrivée.
-    */
+    estimatedNextTime = analyseTime(rounds);
 
-    if(
-      lastRoundTimestamp===timing.latestTimestamp &&
-      nextEstimatedTime &&
-      nextEstimatedTime>Date.now()
-    ) {
-      timing.time=nextEstimatedTime;
+    if (estimatedNextTime) {
+      setText(
+        "estimatedTime",
+        formatTime(estimatedNextTime)
+      );
+      updateCountdown();
+    } else {
+      setText("estimatedTime", "--:--:--");
+      setText("countdown", "--:--:--");
     }
 
-    displaySignal(stats,timing);
+  } catch (error) {
+    console.error("Erreur d'analyse :", error);
 
-    console.log("AI CRASH ADAPTIVE ANALYSIS",{
-      manches:rounds.length,
-      coefficientCentral:stats.central,
-      fourchetteBasse:stats.low,
-      fourchetteHaute:stats.high,
-      scoreDescriptif:stats.score,
-      feu:stats.light,
-      adaptation:stats.regime.state,
-      fenetreUtilisee:stats.windowSize
-    });
-
-  } catch(error) {
-    console.error("AI CRASH BOT :",error);
-
-    displayNoSignal("ERREUR : "+error.message);
-
-    setText("adaptationStatus","CONNEXION / ANALYSE");
-    setText("adaptationDetails",error.message);
+    setText(
+      "signalStatus",
+      "ERREUR : " + error.message
+    );
 
   } finally {
-    analysing=false;
+    analysisInProgress = false;
   }
 }
 
 /* =========================================
-   INITIALISATION
+   DÉMARRAGE AUTOMATIQUE
 ========================================= */
 
-function initialize() {
-  console.log("AI CRASH ADAPTIVE INTELLIGENCE démarré.");
+function startBot() {
+  if (refreshInterval) clearInterval(refreshInterval);
+  if (countdownInterval) clearInterval(countdownInterval);
 
   runAnalysis();
 
-  setInterval(updateCountdown,1000);
-  setInterval(runAnalysis,CONFIG.REFRESH_MS);
+  refreshInterval = setInterval(
+    runAnalysis,
+    CONFIG.REFRESH_MS
+  );
+
+  countdownInterval = setInterval(
+    updateCountdown,
+    CONFIG.COUNTDOWN_MS
+  );
 }
 
-if(document.readyState==="loading") {
-  document.addEventListener("DOMContentLoaded",initialize);
-} else {
-  initialize();
-     }
-     
+document.addEventListener("DOMContentLoaded", startBot);
