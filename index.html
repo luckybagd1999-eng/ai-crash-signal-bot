@@ -9,41 +9,134 @@
 
 <style>
 *{box-sizing:border-box}
+
 body{
-  margin:0;padding:20px;min-height:100vh;
-  display:flex;justify-content:center;align-items:center;
+  margin:0;
+  padding:20px;
+  min-height:100vh;
+  display:flex;
+  justify-content:center;
+  align-items:center;
   background:radial-gradient(circle at top,#17294b,#080d18 65%);
-  color:#f4f7ff;font-family:Arial,sans-serif
+  color:#f4f7ff;
+  font-family:Arial,sans-serif;
 }
+
 .dashboard{width:100%;max-width:560px}
-h1{text-align:center;font-size:22px;letter-spacing:1px}
-.subtitle{text-align:center;color:#91a6c9;font-size:12px;margin-bottom:25px}
+
+h1{
+  text-align:center;
+  font-size:22px;
+  letter-spacing:1px;
+}
+
+.subtitle{
+  text-align:center;
+  color:#91a6c9;
+  font-size:12px;
+  margin-bottom:25px;
+}
+
 .panel{
-  background:#101d33;border:1px solid #2a4168;
-  border-radius:16px;padding:20px;margin-bottom:18px
+  background:#101d33;
+  border:1px solid #2a4168;
+  border-radius:16px;
+  padding:20px;
 }
-.panel h2{text-align:center;color:#7db6ff;font-size:15px;letter-spacing:1px}
+
+.panel h2{
+  text-align:center;
+  color:#7db6ff;
+  font-size:15px;
+  letter-spacing:1px;
+}
+
 .metric{
-  background:#0b1629;border:1px solid #253a5c;
-  border-radius:11px;padding:15px;margin-top:12px;text-align:center
+  background:#0b1629;
+  border:1px solid #253a5c;
+  border-radius:11px;
+  padding:17px;
+  margin-top:13px;
+  text-align:center;
 }
-.metric-label{font-size:11px;color:#91a6c9;margin-bottom:9px}
-.metric-value{font-size:clamp(25px,7vw,34px);font-weight:bold;font-variant-numeric:tabular-nums}
+
+.metric-label{
+  font-size:11px;
+  color:#91a6c9;
+  margin-bottom:10px;
+}
+
+.metric-value{
+  font-size:clamp(25px,7vw,34px);
+  font-weight:bold;
+  font-variant-numeric:tabular-nums;
+}
+
 .green{color:#45e0a0}
 .blue{color:#7db6ff}
-.status{text-align:center;font-size:12px;margin-top:14px;color:#91a6c9}
-.disclaimer{text-align:center;color:#71839f;font-size:10px;line-height:1.5;margin-top:20px}
+
+.light-container{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:15px;
+  margin:18px 0 8px;
+}
+
+.traffic-light{
+  width:27px;
+  height:27px;
+  border-radius:50%;
+  background:#364152;
+  border:2px solid #65748b;
+  opacity:.25;
+  transition:all .3s ease;
+}
+
+.traffic-light.active{
+  opacity:1;
+  box-shadow:0 0 18px currentColor;
+}
+
+#lightGreen{background:#16c765;color:#16c765}
+#lightOrange{background:#f59e0b;color:#f59e0b}
+#lightRed{background:#ef4444;color:#ef4444}
+
+.light-label{
+  text-align:center;
+  font-size:13px;
+  font-weight:bold;
+  margin-bottom:12px;
+}
+
+.status{
+  text-align:center;
+  font-size:12px;
+  line-height:1.5;
+  margin-top:14px;
+  color:#91a6c9;
+}
+
+.disclaimer{
+  text-align:center;
+  color:#71839f;
+  font-size:10px;
+  line-height:1.5;
+  margin-top:20px;
+}
 </style>
 
-<script src="./app.js?v=11" defer></script>
+<script src="./app.js?v=15" defer></script>
 </head>
 
 <body>
 <main class="dashboard">
+
   <h1>AI CRASH SIGNAL BOT</h1>
-  <div class="subtitle">LUCKY JET · ANALYSE RENFORCÉE</div>
+  <div class="subtitle">LUCKY JET · ADAPTIVE INTELLIGENCE</div>
 
   <section class="panel">
+
     <h2>SIGNAL ACTUEL</h2>
 
     <div class="metric">
@@ -57,49 +150,49 @@ h1{text-align:center;font-size:22px;letter-spacing:1px}
     </div>
 
     <div class="metric">
-      <div class="metric-label">HEURE ESTIMÉE</div>
+      <div class="metric-label">NIVEAU STATISTIQUE</div>
+
+      <div class="light-container">
+        <div class="traffic-light" id="lightGreen"></div>
+        <div class="traffic-light" id="lightOrange"></div>
+        <div class="traffic-light" id="lightRed"></div>
+      </div>
+
+      <div class="light-label" id="lightLabel">EN ANALYSE</div>
+    </div>
+
+    <div class="metric">
+      <div class="metric-label">HEURE ESTIMÉE INDICATIVE</div>
       <div class="metric-value" id="estimatedTime">--:--:--</div>
     </div>
 
     <div class="metric">
-      <div class="metric-label">TEMPS DE PRÉPARATION</div>
-      <div class="metric-value blue" id="countdown">--:--</div>
-    </div>
-
-    <div class="status" id="signalStatus">Analyse en cours...</div>
-  </section>
-
-  <section class="panel">
-    <h2>PROCHAINE COTE</h2>
-
-    <div class="metric">
-      <div class="metric-label">COEFFICIENT ESTIMÉ</div>
-      <div class="metric-value green" id="nextCoefficient">En attente</div>
-    </div>
-
-    <div class="metric">
-      <div class="metric-label">FOURCHETTE INDICATIVE</div>
-      <div class="metric-value" id="nextRange">--</div>
-    </div>
-
-    <div class="metric">
-      <div class="metric-label">HEURE ESTIMÉE</div>
-      <div class="metric-value" id="nextTime">--:--:--</div>
-    </div>
-
-    <div class="metric">
       <div class="metric-label">TEMPS RESTANT</div>
-      <div class="metric-value blue" id="nextCountdown">--:--</div>
+      <div class="metric-value blue" id="countdown">--:--:--</div>
     </div>
 
-    <div class="status" id="nextStatus">En attente d'une analyse valide</div>
+    <div class="metric">
+      <div class="metric-label">ADAPTATION AUTOMATIQUE</div>
+      <div class="metric-value" style="font-size:17px" id="adaptationStatus">
+        Initialisation...
+      </div>
+      <div class="status" id="adaptationDetails">
+        Surveillance des changements statistiques
+      </div>
+    </div>
+
+    <div class="status" id="signalStatus">
+      Connexion en cours...
+    </div>
+
   </section>
 
   <p class="disclaimer">
-    Estimations statistiques expérimentales. Les résultats d'un jeu
-    aléatoire ne peuvent pas être prédits de manière fiable.
-    Aucun signal ne garantit un coefficient supérieur ou égal à 2x.
+    Analyse statistique expérimentale des résultats passés.
+    Les feux indiquent la stabilité statistique, pas une garantie
+    de gain ni une prédiction certaine du prochain coefficient.
   </p>
+
 </main>
 </body>
 </html>
