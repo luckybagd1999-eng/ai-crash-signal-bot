@@ -2,7 +2,9 @@
 "use strict";
 
 /* =========================================
-   AI CRASH SIGNAL BOT - LUCKY JET
+   AI CRASH SIGNAL BOT
+   Jeu : Lucky Jet
+   API : GameData365 via Render
 ========================================= */
 
 const CONFIG = {
@@ -21,7 +23,7 @@ let nextEstimatedTime = null;
 let lastRoundTimestamp = null;
 
 /* =========================================
-   OUTILS STATISTIQUES
+   OUTILS MATHÉMATIQUES
 ========================================= */
 
 function median(values) {
@@ -68,20 +70,22 @@ async function getHistory() {
       CONFIG.API + "/api/history",
       {
         method: "GET",
-        headers: { "Accept": "application/json" },
+        headers: {
+          "Accept": "application/json"
+        },
         cache: "no-store",
         signal: controller.signal
       }
     );
 
     if (!response.ok) {
-      throw new Error("Erreur API HTTP " + response.status);
+      throw new Error("Erreur HTTP " + response.status);
     }
 
     const data = await response.json();
 
     if (!Array.isArray(data.rounds)) {
-      throw new Error("Les manches sont absentes de la réponse API.");
+      throw new Error("Historique absent de la réponse API.");
     }
 
     return data;
@@ -99,7 +103,7 @@ async function getHistory() {
 }
 
 /* =========================================
-   NORMALISATION DES DONNÉES
+   NORMALISATION DES MANCHES
 ========================================= */
 
 function normalizeRounds(data) {
@@ -110,7 +114,6 @@ function normalizeRounds(data) {
       if (typeof round.timestamp === "number") {
         timestamp = round.timestamp;
 
-        // Conversion des timestamps en secondes
         if (timestamp < 100000000000) {
           timestamp *= 1000;
         }
@@ -133,34 +136,53 @@ function normalizeRounds(data) {
 }
 
 /* =========================================
-   FILTRE STRICT MINIMUM 2.00x
+   ANALYSE STATISTIQUE RENFORCÉE
 ========================================= */
 
 function analyseStrict(rounds) {
   if (rounds.length < CONFIG.HISTORY_LIMIT) {
     return {
       valid: false,
-      reason: "100 manches nécessaires. Manches reçues : " + rounds.length
+      reason: "Historique insuffisant : 100 manches nécessaires."
     };
   }
 
-  const recent = rounds
-    .slice(-CONFIG.RECENT_WINDOW)
-    .map(round => round.multiplier);
+  const all = rounds.map(r => r.multiplier);
+  const recent = all.slice(-20);
+  const previous = all.slice(-40, -20);
 
   const central = median(recent);
   const low = quantile(recent, 0.25);
   const high = quantile(recent, 0.75);
 
+  const countAbove2 = recent.filter(
+    value => value >= CONFIG.MIN_COEFFICIENT
+  ).length;
+
+  const countAbove2All = all.filter(
+    value => value >= CONFIG.MIN_COEFFICIENT
+  ).length;
+
+  const previousMedian = median(previous);
+
+  const condition1 = central >= CONFIG.MIN_COEFFICIENT;
+  const condition2 = countAbove2 >= 8;
+  const condition3 = countAbove2All >= 30;
+  const condition4 = previousMedian >= 1.50;
+
   const valid =
-    central >= CONFIG.MIN_COEFFICIENT &&
-    low >= CONFIG.MIN_COEFFICIENT;
+    condition1 &&
+    (condition2 || condition3) &&
+    condition4;
 
   return {
     valid,
     central,
     low,
-    high
+    high,
+    countAbove2,
+    countAbove2All,
+    previousMedian
   };
 }
 
@@ -181,18 +203,15 @@ function analyseTime(rounds) {
   }
 
   if (intervals.length < 5) {
-    throw new Error("Historique temporel insuffisant.");
+    throw new Error("Données temporelles insuffisantes.");
   }
 
   const typicalInterval = median(intervals.slice(-20));
   const latestTimestamp = rounds[rounds.length - 1].timestamp;
 
-  const minimumTime =
-    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000;
-
   const estimatedTime = Math.max(
     latestTimestamp + typicalInterval * 1000,
-    minimumTime
+    Date.now() + CONFIG.MIN_PREPARATION_SECONDS * 1000
   );
 
   return {
@@ -215,11 +234,11 @@ function displayNoSignal(reason) {
   setText("countdown", "--:--");
   setText("signalStatus", reason);
 
-  setText("nextCoefficient", "AUCUN SIGNAL");
+  setText("nextCoefficient", "EN ATTENTE");
   setText("nextRange", "--");
   setText("nextTime", "--:--:--");
   setText("nextCountdown", "--:--");
-  setText("nextStatus", "Filtre minimum 2.00x non satisfait.");
+  setText("nextStatus", "Aucune configuration retenue.");
 }
 
 /* =========================================
@@ -228,15 +247,21 @@ function displayNoSignal(reason) {
 
 function displaySignal(stats, timing) {
   setText("coefficient", formatMultiplier(stats.central));
+
   setText(
     "range",
-    formatMultiplier(stats.low) + " – " + formatMultiplier(stats.high)
+    formatMultiplier(stats.low) +
+    " – " +
+    formatMultiplier(stats.high)
   );
 
   setText("nextCoefficient", formatMultiplier(stats.central));
+
   setText(
     "nextRange",
-    formatMultiplier(stats.low) + " – " + formatMultiplier(stats.high)
+    formatMultiplier(stats.low) +
+    " – " +
+    formatMultiplier(stats.high)
   );
 
   nextEstimatedTime = timing.time;
@@ -244,19 +269,19 @@ function displaySignal(stats, timing) {
 
   setText(
     "signalStatus",
-    "Critères statistiques du filtre 2.00x satisfaits."
+    "Candidat statistique détecté · Référence ≥ 2.00x"
   );
 
   setText(
     "nextStatus",
-    "Référence statistique expérimentale, non prédictive."
+    "Estimation expérimentale, non garantie."
   );
 
   updateCountdown();
 }
 
 /* =========================================
-   COMPTES À REBOURS
+   COMPTE À REBOURS
 ========================================= */
 
 function formatRemaining(seconds) {
@@ -309,14 +334,16 @@ async function runAnalysis() {
 
   try {
     setText("signalStatus", "Récupération des données...");
-    setText("nextStatus", "Connexion à GameData365...");
+    setText("nextStatus", "Analyse des 100 dernières manches...");
 
     const data = await getHistory();
     const rounds = normalizeRounds(data);
 
     if (rounds.length < CONFIG.HISTORY_LIMIT) {
       displayNoSignal(
-        "Historique insuffisant : " + rounds.length + "/100 manches."
+        "Historique insuffisant : " +
+        rounds.length +
+        "/100 manches."
       );
       return;
     }
@@ -325,15 +352,14 @@ async function runAnalysis() {
 
     if (!stats.valid) {
       displayNoSignal(
-        "AUCUN SIGNAL : critères statistiques minimum 2.00x non réunis."
+        "Aucun candidat : filtre statistique non satisfait."
       );
+      console.log("Critères analysés :", stats);
       return;
     }
 
     const timing = analyseTime(rounds);
 
-    // Conserver le même compte à rebours tant qu'aucune
-    // nouvelle manche n'est arrivée.
     if (
       lastRoundTimestamp === timing.latestTimestamp &&
       nextEstimatedTime &&
@@ -344,16 +370,18 @@ async function runAnalysis() {
 
     displaySignal(stats, timing);
 
-    console.log("AI CRASH BOT - Analyse terminée", {
-      manches: rounds.length,
-      mediane: stats.central,
-      borneBasse: stats.low,
-      borneHaute: stats.high
+    console.log("ANALYSE TERMINÉE", {
+      nombreManches: rounds.length,
+      mediane20: stats.central,
+      quartile25: stats.low,
+      quartile75: stats.high,
+      manchesSuperieures2x: stats.countAbove2,
+      totalSuperieures2x: stats.countAbove2All,
+      medianePrecedente: stats.previousMedian
     });
 
   } catch (error) {
-    console.error("AI CRASH BOT :", error);
-
+    console.error("ERREUR AI CRASH BOT :", error);
     displayNoSignal("ERREUR : " + error.message);
 
   } finally {
@@ -362,10 +390,12 @@ async function runAnalysis() {
 }
 
 /* =========================================
-   DÉMARRAGE AUTOMATIQUE
+   INITIALISATION
 ========================================= */
 
 function initialize() {
+  console.log("AI CRASH SIGNAL BOT démarré.");
+
   runAnalysis();
 
   setInterval(updateCountdown, 1000);
@@ -376,5 +406,4 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initialize);
 } else {
   initialize();
-      }
-      
+}
