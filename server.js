@@ -17,6 +17,7 @@ const ALLOWED_ORIGIN = "https://luckybagd1999-eng.github.io";
 const MIN_COEFFICIENT = 1.50;
 
 const requestCounts = new Map();
+let openRouterBlockedUntil = 0;
 
 function send(res, status, data) {
   if (res.writableEnded) return;
@@ -57,6 +58,36 @@ async function readBody(req) {
   }
 
   return JSON.parse(body);
+}
+
+// MODE DE SECOURS STATISTIQUE
+function statisticalFallback(stats, reason) {
+  const score = Math.max(
+    0,
+    Math.min(100, Number(stats.score) || 0)
+  );
+
+  const coefficient = Number(stats.central);
+
+  const rejected = score < 50 || coefficient < MIN_COEFFICIENT;
+
+  return {
+    success: true,
+    model: "ANALYSE STATISTIQUE AUTONOME",
+    decision: rejected ? "REJETÉ" : "À_SURVEILLER",
+    coefficient: rejected ? null : coefficient,
+    confidence: score,
+    reason: rejected
+      ? "Le candidat ne satisfait pas les critères statistiques minimaux."
+      : "Candidat conservé par l'analyse statistique. Validation IA indisponible.",
+    risk: rejected ? "ÉLEVÉ" : "NON CONFIRMÉ",
+    summary: rejected
+      ? "Candidat rejeté par le filtre statistique."
+      : "Analyse statistique autonome active. Prudence : aucune validation IA.",
+    aiUnavailable: true,
+    aiError: reason,
+    timestamp: new Date().toISOString()
+  };
 }
 
 function extractAIResult(message) {
@@ -114,6 +145,9 @@ const server = http.createServer(async (req, res) => {
       status: "online",
       gameData365: Boolean(API_KEY),
       openRouter: Boolean(OPENROUTER_API_KEY),
+      aiMode: Date.now() < openRouterBlockedUntil
+        ? "COOLDOWN"
+        : "AVAILABLE",
       model: AI_MODEL,
       minimumCoefficient: MIN_COEFFICIENT
     });
@@ -165,7 +199,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // ANALYSE IA OPENROUTER
+  // ANALYSE IA ET SECOURS STATISTIQUE
   if (path === "/api/ai-analysis") {
 
     if (req.method !== "POST") {
@@ -180,80 +214,90 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    if (!OPENROUTER_API_KEY) {
-      return send(res, 503, {
-        error: "Clé OpenRouter absente de Render."
+    let input;
+
+    try {
+      input = await readBody(req);
+    } catch (error) {
+      if (error.message === "BODY_TOO_LARGE") {
+        return send(res, 413, {
+          error: "Données trop volumineuses."
+        });
+      }
+
+      return send(res, 400, {
+        error: "Format JSON invalide."
       });
     }
 
-    try {
-      let input;
+    const stats = input.stats;
 
-      try {
-        input = await readBody(req);
-      } catch (error) {
-        if (error.message === "BODY_TOO_LARGE") {
-          return send(res, 413, {
-            error: "Données trop volumineuses."
-          });
-        }
+    const rounds = Array.isArray(input.rounds)
+      ? input.rounds.slice(-100)
+      : [];
 
-        return send(res, 400, {
-          error: "Format JSON invalide."
-        });
-      }
+    if (
+      !stats ||
+      !Number.isFinite(Number(stats.central)) ||
+      !Number.isFinite(Number(stats.score))
+    ) {
+      return send(res, 400, {
+        error: "Statistiques invalides ou manquantes."
+      });
+    }
 
-      const stats = input.stats;
+    const originalCoefficient = Number(stats.central);
 
-      const rounds = Array.isArray(input.rounds)
-        ? input.rounds.slice(-100)
-        : [];
+    if (originalCoefficient < MIN_COEFFICIENT) {
+      return send(res, 200, {
+        success: true,
+        model: "FILTRE STATISTIQUE",
+        decision: "REJETÉ",
+        coefficient: null,
+        confidence: 0,
+        reason: "Le seuil minimum de 1.50x n'est pas respecté.",
+        risk: "ÉLEVÉ",
+        summary: "Candidat rejeté par le filtre statistique."
+      });
+    }
 
-      if (
-        !stats ||
-        !Number.isFinite(Number(stats.central)) ||
-        !Number.isFinite(Number(stats.score))
-      ) {
-        return send(res, 400, {
-          error: "Statistiques invalides ou manquantes."
-        });
-      }
+    // SI OPENROUTER EST INDISPONIBLE
+    if (!OPENROUTER_API_KEY) {
+      console.log("OpenRouter absent : mode statistique activé.");
 
-      const originalCoefficient = Number(stats.central);
+      return send(res, 200, statisticalFallback(
+        stats,
+        "Clé OpenRouter absente."
+      ));
+    }
 
-      // NOUVEAU SEUIL MINIMUM : 1.50x
-      if (originalCoefficient < MIN_COEFFICIENT) {
-        return send(res, 200, {
-          success: true,
-          model: AI_MODEL,
-          decision: "REJETÉ",
-          coefficient: null,
-          confidence: 0,
-          reason: "Le seuil minimum de 1.50x n'est pas respecté.",
-          risk: "ÉLEVÉ",
-          summary: "Candidat rejeté par le filtre statistique."
-        });
-      }
+    // APRÈS UNE LIMITE QUOTIDIENNE 429
+    if (Date.now() < openRouterBlockedUntil) {
+      console.log("OpenRouter en pause : mode statistique actif.");
 
-      const analysisData = {
-        game: "Lucky Jet",
-        minimumCoefficient: MIN_COEFFICIENT,
-        statistics: stats,
-        recentRounds: rounds,
-        regime: input.regime || null
-      };
+      return send(res, 200, statisticalFallback(
+        stats,
+        "Limite quotidienne OpenRouter atteinte."
+      ));
+    }
 
-      const systemPrompt = `
+    const analysisData = {
+      game: "Lucky Jet",
+      minimumCoefficient: MIN_COEFFICIENT,
+      statistics: stats,
+      recentRounds: rounds,
+      regime: input.regime || null
+    };
+
+    const systemPrompt = `
 Tu es un analyste statistique spécialisé dans les jeux Crash.
-
-Tu dois examiner les données historiques reçues.
 
 RÈGLES ABSOLUES :
 
 - Le jeu reste aléatoire.
 - Tu ne connais pas le prochain résultat.
 - Tu ne dois inventer aucune donnée.
-- Le seuil statistique minimal est de 1.50x.
+- Le seuil minimum est de 1.50x.
 - Examine la fréquence, la stabilité, la volatilité
   et les changements de régime.
 - Le coefficient central est calculé par le moteur
@@ -262,8 +306,7 @@ RÈGLES ABSOLUES :
   rejette le candidat.
 - La confiance mesure la qualité de l'analyse,
   jamais une probabilité de gain.
-- Ne considère jamais le seuil de 1.50x comme
-  une garantie de résultat futur.
+- Ne promets jamais un résultat futur.
 
 DÉCISIONS POSSIBLES :
 
@@ -271,57 +314,54 @@ VALIDÉ
 À_SURVEILLER
 REJETÉ
 
-VALIDÉ : cohérence historique suffisante.
-À_SURVEILLER : résultats intéressants mais incertains.
-REJETÉ : données insuffisantes ou instables.
-
 Retourne une seule décision structurée.
 Ne prédis jamais un coefficient futur.
 `;
 
-      const tools = [
-        {
-          type: "function",
-          function: {
-            name: "submit_analysis",
-            description: "Retourne la décision finale de l'analyse statistique.",
-            parameters: {
-              type: "object",
-              properties: {
-                decision: {
-                  type: "string",
-                  enum: ["VALIDÉ", "À_SURVEILLER", "REJETÉ"]
-                },
-                coefficient: {
-                  type: ["number", "null"]
-                },
-                confidence: {
-                  type: "number"
-                },
-                reason: {
-                  type: "string"
-                },
-                risk: {
-                  type: "string"
-                },
-                summary: {
-                  type: "string"
-                }
+    const tools = [
+      {
+        type: "function",
+        function: {
+          name: "submit_analysis",
+          description: "Retourne la décision finale.",
+          parameters: {
+            type: "object",
+            properties: {
+              decision: {
+                type: "string",
+                enum: ["VALIDÉ", "À_SURVEILLER", "REJETÉ"]
               },
-              required: [
-                "decision",
-                "coefficient",
-                "confidence",
-                "reason",
-                "risk",
-                "summary"
-              ],
-              additionalProperties: false
-            }
+              coefficient: {
+                type: ["number", "null"]
+              },
+              confidence: {
+                type: "number"
+              },
+              reason: {
+                type: "string"
+              },
+              risk: {
+                type: "string"
+              },
+              summary: {
+                type: "string"
+              }
+            },
+            required: [
+              "decision",
+              "coefficient",
+              "confidence",
+              "reason",
+              "risk",
+              "summary"
+            ],
+            additionalProperties: false
           }
         }
-      ];
+      }
+    ];
 
+    try {
       console.log("Demande envoyée à Nemotron.");
 
       const response = await fetch(OPENROUTER_URL, {
@@ -366,25 +406,37 @@ Ne prédis jamais un coefficient futur.
       try {
         result = JSON.parse(responseText);
       } catch {
-        console.error("OpenRouter réponse non JSON:", response.status);
+        console.error("Réponse OpenRouter non JSON.");
 
-        return send(res, 502, {
-          error: "Réponse OpenRouter illisible.",
-          httpStatus: response.status
-        });
+        return send(res, 200, statisticalFallback(
+          stats,
+          "Réponse OpenRouter illisible."
+        ));
       }
 
       if (!response.ok) {
+        const errorMessage =
+          result.error?.message || "Erreur fournisseur.";
+
         console.error("OPENROUTER ERROR:", {
           status: response.status,
-          error: result.error?.message || "Erreur inconnue"
+          error: errorMessage
         });
 
-        return send(res, 502, {
-          error: "OpenRouter a refusé la demande.",
-          httpStatus: response.status,
-          details: result.error?.message || "Erreur fournisseur."
-        });
+        // LIMITE QUOTIDIENNE ATTEINTE
+        if (
+          response.status === 429 &&
+          errorMessage.includes("free-models-per-day")
+        ) {
+          openRouterBlockedUntil = Date.now() + 24 * 60 * 60 * 1000;
+
+          console.log("OpenRouter suspendu pendant 24 heures.");
+        }
+
+        return send(res, 200, statisticalFallback(
+          stats,
+          errorMessage
+        ));
       }
 
       const choice = result.choices?.[0];
@@ -396,22 +448,10 @@ Ne prédis jamais un coefficient futur.
       const aiResult = extractAIResult(message);
 
       if (!aiResult) {
-        console.error("NEMOTRON EMPTY RESPONSE:", {
-          finishReason: choice?.finish_reason,
-          hasMessage: Boolean(message),
-          hasContent: Boolean(message?.content),
-          hasToolCalls: Boolean(message?.tool_calls?.length),
-          hasReasoning: Boolean(message?.reasoning),
-          provider: result.provider || null
-        });
-
-        return send(res, 502, {
-          error: "Nemotron n'a fourni aucune décision exploitable.",
-          finishReason: choice?.finish_reason || null,
-          hasReasoning: Boolean(message?.reasoning),
-          hasContent: Boolean(message?.content),
-          hasToolCalls: Boolean(message?.tool_calls?.length)
-        });
+        return send(res, 200, statisticalFallback(
+          stats,
+          "Nemotron n'a fourni aucune décision exploitable."
+        ));
       }
 
       const allowedDecisions = [
@@ -421,9 +461,10 @@ Ne prédis jamais un coefficient futur.
       ];
 
       if (!allowedDecisions.includes(aiResult.decision)) {
-        return send(res, 502, {
-          error: "Décision Nemotron invalide."
-        });
+        return send(res, 200, statisticalFallback(
+          stats,
+          "Décision Nemotron invalide."
+        ));
       }
 
       const decision = aiResult.decision;
@@ -442,16 +483,17 @@ Ne prédis jamais un coefficient futur.
         reason: String(aiResult.reason || ""),
         risk: String(aiResult.risk || "INCONNU"),
         summary: String(aiResult.summary || ""),
+        aiUnavailable: false,
         timestamp: new Date().toISOString()
       });
 
     } catch (error) {
-      console.error("AI ANALYSIS ERROR:", error);
+      console.error("AI ANALYSIS ERROR:", error.message);
 
-      return send(res, 502, {
-        error: "Erreur pendant l'analyse IA.",
-        details: error.message
-      });
+      return send(res, 200, statisticalFallback(
+        stats,
+        error.message || "Erreur pendant l'analyse IA."
+      ));
     }
   }
 
@@ -467,4 +509,4 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("Modèle IA :", AI_MODEL);
   console.log("Seuil minimum :", MIN_COEFFICIENT);
 });
-      
+        
