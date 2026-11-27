@@ -11,7 +11,7 @@ const CONFIG = {
   API: "https://ai-crash-signal-bot.onrender.com",
   HISTORY_LIMIT: 100,
   REFRESH_MS: 60000,
-  MIN_COEFFICIENT: 2.00,
+  MIN_COEFFICIENT: 1.50,
   MIN_ROUNDS: 40,
   MIN_HITS: 2,
   MIN_PREPARATION_SECONDS: 60,
@@ -305,10 +305,10 @@ function analyseRegime(rounds) {
   const previousMedian = median(previous);
 
   const recentRate =
-    recent.filter(v => v >= 2).length / recent.length;
+    recent.filter(v => v >= CONFIG.MIN_COEFFICIENT).length / recent.length;
 
   const previousRate =
-    previous.filter(v => v >= 2).length / previous.length;
+    previous.filter(v => v >= CONFIG.MIN_COEFFICIENT).length / previous.length;
 
   const recentVolatility = standardDeviation(recent);
   const previousVolatility = standardDeviation(previous);
@@ -440,7 +440,9 @@ function adaptiveAnalysis(rounds) {
       reason:
         "Aucune fenêtre ne contient au moins " +
         CONFIG.MIN_HITS +
-        " manches ayant atteint 2.00x."
+        " manches ayant atteint " +
+        formatMultiplier(CONFIG.MIN_COEFFICIENT) +
+        "."
     };
   }
 
@@ -549,7 +551,6 @@ async function requestAIReview(stats, rounds) {
       throw new Error("Décision IA invalide.");
     }
 
-    // Sécurité : le coefficient reste celui du moteur statistique.
     result.coefficient = stats.central;
 
     if (stats.central < CONFIG.MIN_COEFFICIENT) {
@@ -672,7 +673,8 @@ function displaySignal(stats, timing) {
   setText(
     "signalStatus",
     "Analyse de " + stats.successfulCount +
-    " manches ≥ 2.00x · Fenêtre " +
+    " manches ≥ " + formatMultiplier(CONFIG.MIN_COEFFICIENT) +
+    " · Fenêtre " +
     stats.windowSize + " manches"
   );
 
@@ -810,7 +812,6 @@ async function runAnalysis() {
     setText("signalStatus", "ÉVALUATION PAR NEMOTRON...");
     setText("adaptationStatus", "VALIDATION IA EN COURS");
 
-    // L'IA examine les statistiques avant l'affichage du signal final.
     const aiResult = await requestAIReview(stats, rounds);
 
     displayAIReview(aiResult);
@@ -857,7 +858,8 @@ async function runAnalysis() {
       scoreDescriptif: stats.score,
       feu: stats.light,
       fenetre: stats.windowSize,
-      manchesSuperieuresA2: stats.successfulCount,
+      seuilMinimum: CONFIG.MIN_COEFFICIENT,
+      manchesAtteignantSeuil: stats.successfulCount,
       tauxHistorique: stats.hitRate,
       decisionIA: aiResult.decision
     });
@@ -883,6 +885,7 @@ async function runAnalysis() {
 
 function initialize() {
   console.log("AI CRASH ADAPTIVE INTELLIGENCE démarré.");
+  console.log("Seuil minimum :", CONFIG.MIN_COEFFICIENT);
 
   runAnalysis();
 
