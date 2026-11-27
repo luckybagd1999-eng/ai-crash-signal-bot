@@ -14,8 +14,8 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const AI_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
 
 const ALLOWED_ORIGIN = "https://luckybagd1999-eng.github.io";
+const MIN_COEFFICIENT = 1.50;
 
-// Limitation simple pour éviter les appels abusifs.
 const requestCounts = new Map();
 
 function send(res, status, data) {
@@ -60,7 +60,6 @@ async function readBody(req) {
 }
 
 function extractAIResult(message) {
-  // 1. Réponse structurée par appel de fonction.
   const calls = message?.tool_calls || [];
 
   for (const call of calls) {
@@ -69,7 +68,6 @@ function extractAIResult(message) {
     }
   }
 
-  // 2. Réponse textuelle classique.
   let content = message?.content;
 
   if (Array.isArray(content)) {
@@ -116,15 +114,18 @@ const server = http.createServer(async (req, res) => {
       status: "online",
       gameData365: Boolean(API_KEY),
       openRouter: Boolean(OPENROUTER_API_KEY),
-      model: AI_MODEL
+      model: AI_MODEL,
+      minimumCoefficient: MIN_COEFFICIENT
     });
   }
 
-  // GAME DATA 365
+  // GAMEDATA365
   if (path === "/api/live" || path === "/api/history") {
 
     if (req.method !== "GET") {
-      return send(res, 405, { error: "Méthode non autorisée." });
+      return send(res, 405, {
+        error: "Méthode non autorisée."
+      });
     }
 
     if (!API_KEY) {
@@ -164,7 +165,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // OPENROUTER
+  // ANALYSE IA OPENROUTER
   if (path === "/api/ai-analysis") {
 
     if (req.method !== "POST") {
@@ -186,7 +187,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-
       let input;
 
       try {
@@ -221,14 +221,15 @@ const server = http.createServer(async (req, res) => {
 
       const originalCoefficient = Number(stats.central);
 
-      if (originalCoefficient < 2) {
+      // NOUVEAU SEUIL MINIMUM : 1.50x
+      if (originalCoefficient < MIN_COEFFICIENT) {
         return send(res, 200, {
           success: true,
           model: AI_MODEL,
           decision: "REJETÉ",
           coefficient: null,
           confidence: 0,
-          reason: "Le seuil minimum de 2.00x n'est pas respecté.",
+          reason: "Le seuil minimum de 1.50x n'est pas respecté.",
           risk: "ÉLEVÉ",
           summary: "Candidat rejeté par le filtre statistique."
         });
@@ -236,13 +237,14 @@ const server = http.createServer(async (req, res) => {
 
       const analysisData = {
         game: "Lucky Jet",
+        minimumCoefficient: MIN_COEFFICIENT,
         statistics: stats,
         recentRounds: rounds,
         regime: input.regime || null
       };
 
       const systemPrompt = `
-Tu es un analyste statistique de jeux Crash.
+Tu es un analyste statistique spécialisé dans les jeux Crash.
 
 Tu dois examiner les données historiques reçues.
 
@@ -251,7 +253,7 @@ RÈGLES ABSOLUES :
 - Le jeu reste aléatoire.
 - Tu ne connais pas le prochain résultat.
 - Tu ne dois inventer aucune donnée.
-- Le seuil minimal est 2.00x.
+- Le seuil statistique minimal est de 1.50x.
 - Examine la fréquence, la stabilité, la volatilité
   et les changements de régime.
 - Le coefficient central est calculé par le moteur
@@ -260,6 +262,8 @@ RÈGLES ABSOLUES :
   rejette le candidat.
 - La confiance mesure la qualité de l'analyse,
   jamais une probabilité de gain.
+- Ne considère jamais le seuil de 1.50x comme
+  une garantie de résultat futur.
 
 DÉCISIONS POSSIBLES :
 
@@ -275,7 +279,6 @@ Retourne une seule décision structurée.
 Ne prédis jamais un coefficient futur.
 `;
 
-      // Fonction structurée demandée au modèle.
       const tools = [
         {
           type: "function",
@@ -423,7 +426,6 @@ Ne prédis jamais un coefficient futur.
         });
       }
 
-      // Le coefficient original est toujours conservé.
       const decision = aiResult.decision;
 
       const confidence = Math.max(
@@ -444,7 +446,6 @@ Ne prédis jamais un coefficient futur.
       });
 
     } catch (error) {
-
       console.error("AI ANALYSIS ERROR:", error);
 
       return send(res, 502, {
@@ -457,7 +458,6 @@ Ne prédis jamais un coefficient futur.
   return send(res, 404, {
     error: "Endpoint introuvable."
   });
-
 });
 
 server.listen(PORT, "0.0.0.0", () => {
@@ -465,5 +465,6 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("GameData365 :", Boolean(API_KEY));
   console.log("OpenRouter :", Boolean(OPENROUTER_API_KEY));
   console.log("Modèle IA :", AI_MODEL);
+  console.log("Seuil minimum :", MIN_COEFFICIENT);
 });
-        
+      
