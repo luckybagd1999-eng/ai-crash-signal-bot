@@ -60,7 +60,7 @@ async function readBody(req) {
   return JSON.parse(body);
 }
 
-// MODE DE SECOURS STATISTIQUE
+// FILTRE STATISTIQUE ADAPTATIF
 function statisticalFallback(stats, reason) {
   const score = Math.max(
     0,
@@ -69,7 +69,8 @@ function statisticalFallback(stats, reason) {
 
   const coefficient = Number(stats.central);
 
-  const rejected = score < 50 || coefficient < MIN_COEFFICIENT;
+  const rejected =
+    score < 40 || coefficient < MIN_COEFFICIENT;
 
   return {
     success: true,
@@ -79,11 +80,19 @@ function statisticalFallback(stats, reason) {
     confidence: score,
     reason: rejected
       ? "Le candidat ne satisfait pas les critères statistiques minimaux."
-      : "Candidat conservé par l'analyse statistique. Validation IA indisponible.",
+      : score < 60
+        ? "Candidat à surveiller. Stabilité statistique encore limitée."
+        : score < 75
+          ? "Candidat intéressant. Stabilité à confirmer."
+          : "Bonne stabilité statistique, mais validation IA indisponible.",
     risk: rejected ? "ÉLEVÉ" : "NON CONFIRMÉ",
     summary: rejected
       ? "Candidat rejeté par le filtre statistique."
-      : "Analyse statistique autonome active. Prudence : aucune validation IA.",
+      : score < 60
+        ? "Candidat conservé pour surveillance."
+        : score < 75
+          ? "Candidat intéressant conservé par le moteur statistique."
+          : "Analyse statistique autonome active.",
     aiUnavailable: true,
     aiError: reason,
     timestamp: new Date().toISOString()
@@ -149,7 +158,8 @@ const server = http.createServer(async (req, res) => {
         ? "COOLDOWN"
         : "AVAILABLE",
       model: AI_MODEL,
-      minimumCoefficient: MIN_COEFFICIENT
+      minimumCoefficient: MIN_COEFFICIENT,
+      minimumScore: 40
     });
   }
 
@@ -199,7 +209,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // ANALYSE IA ET SECOURS STATISTIQUE
+  // ANALYSE STATISTIQUE ET IA
   if (path === "/api/ai-analysis") {
 
     if (req.method !== "POST") {
@@ -246,35 +256,81 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    const originalCoefficient = Number(stats.central);
+    const coefficient = Number(stats.central);
+    const score = Math.max(
+      0,
+      Math.min(100, Number(stats.score))
+    );
 
-    if (originalCoefficient < MIN_COEFFICIENT) {
+    // SEUIL COEFFICIENT
+    if (coefficient < MIN_COEFFICIENT) {
       return send(res, 200, {
         success: true,
         model: "FILTRE STATISTIQUE",
         decision: "REJETÉ",
         coefficient: null,
-        confidence: 0,
+        confidence: score,
         reason: "Le seuil minimum de 1.50x n'est pas respecté.",
         risk: "ÉLEVÉ",
         summary: "Candidat rejeté par le filtre statistique."
       });
     }
 
-    // SI OPENROUTER EST INDISPONIBLE
-    if (!OPENROUTER_API_KEY) {
-      console.log("OpenRouter absent : mode statistique activé.");
+    // SCORE INFERIEUR A 40 : REJET
+    if (score < 40) {
+      return send(res, 200, {
+        success: true,
+        model: "MOTEUR STATISTIQUE",
+        decision: "REJETÉ",
+        coefficient: null,
+        confidence: score,
+        reason: "Score statistique inférieur à 40/100.",
+        risk: "ÉLEVÉ",
+        summary: "Candidat rejeté par le filtre statistique."
+      });
+    }
 
+    // SCORE DE 40 A 59 : SURVEILLANCE
+    if (score < 60) {
+      return send(res, 200, {
+        success: true,
+        model: "MOTEUR STATISTIQUE",
+        decision: "À_SURVEILLER",
+        coefficient,
+        confidence: score,
+        reason: "Candidat à surveiller. Stabilité statistique encore limitée.",
+        risk: "ÉLEVÉ",
+        summary: "Candidat conservé pour surveillance.",
+        aiUnavailable: false,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // SCORE DE 60 A 74 : CANDIDAT INTERESSANT
+    if (score < 75) {
+      return send(res, 200, {
+        success: true,
+        model: "MOTEUR STATISTIQUE",
+        decision: "À_SURVEILLER",
+        coefficient,
+        confidence: score,
+        reason: "Candidat intéressant. Stabilité à confirmer.",
+        risk: "MODÉRÉ",
+        summary: "Candidat intéressant conservé par le moteur statistique.",
+        aiUnavailable: false,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // A PARTIR DE 75 : EVALUATION APPROFONDIE PAR IA
+    if (!OPENROUTER_API_KEY) {
       return send(res, 200, statisticalFallback(
         stats,
         "Clé OpenRouter absente."
       ));
     }
 
-    // APRÈS UNE LIMITE QUOTIDIENNE 429
     if (Date.now() < openRouterBlockedUntil) {
-      console.log("OpenRouter en pause : mode statistique actif.");
-
       return send(res, 200, statisticalFallback(
         stats,
         "Limite quotidienne OpenRouter atteinte."
@@ -406,8 +462,6 @@ Ne prédis jamais un coefficient futur.
       try {
         result = JSON.parse(responseText);
       } catch {
-        console.error("Réponse OpenRouter non JSON.");
-
         return send(res, 200, statisticalFallback(
           stats,
           "Réponse OpenRouter illisible."
@@ -423,14 +477,11 @@ Ne prédis jamais un coefficient futur.
           error: errorMessage
         });
 
-        // LIMITE QUOTIDIENNE ATTEINTE
         if (
           response.status === 429 &&
           errorMessage.includes("free-models-per-day")
         ) {
           openRouterBlockedUntil = Date.now() + 24 * 60 * 60 * 1000;
-
-          console.log("OpenRouter suspendu pendant 24 heures.");
         }
 
         return send(res, 200, statisticalFallback(
@@ -443,7 +494,6 @@ Ne prédis jamais un coefficient futur.
       const message = choice?.message;
 
       console.log("Nemotron finish_reason:", choice?.finish_reason);
-      console.log("Nemotron usage:", result.usage || "Non fourni");
 
       const aiResult = extractAIResult(message);
 
@@ -467,8 +517,6 @@ Ne prédis jamais un coefficient futur.
         ));
       }
 
-      const decision = aiResult.decision;
-
       const confidence = Math.max(
         0,
         Math.min(100, Number(aiResult.confidence) || 0)
@@ -477,8 +525,10 @@ Ne prédis jamais un coefficient futur.
       return send(res, 200, {
         success: true,
         model: AI_MODEL,
-        decision,
-        coefficient: originalCoefficient,
+        decision: aiResult.decision,
+        coefficient: aiResult.decision === "REJETÉ"
+          ? null
+          : coefficient,
         confidence,
         reason: String(aiResult.reason || ""),
         risk: String(aiResult.risk || "INCONNU"),
@@ -508,5 +558,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("OpenRouter :", Boolean(OPENROUTER_API_KEY));
   console.log("Modèle IA :", AI_MODEL);
   console.log("Seuil minimum :", MIN_COEFFICIENT);
+  console.log("Score minimum :", 40);
 });
-        
