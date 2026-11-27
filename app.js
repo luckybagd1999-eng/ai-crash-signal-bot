@@ -4,6 +4,7 @@
 /* =========================================
    AI CRASH SIGNAL BOT
    LUCKY JET - ADAPTIVE INTELLIGENCE
+   STATISTIQUES + OPENROUTER / NEMOTRON
 ========================================= */
 
 const CONFIG = {
@@ -15,6 +16,7 @@ const CONFIG = {
   MIN_HITS: 2,
   MIN_PREPARATION_SECONDS: 60,
   REQUEST_TIMEOUT: 15000,
+  AI_TIMEOUT: 60000,
   WINDOWS: [10, 20, 30, 50, 100]
 };
 
@@ -23,6 +25,105 @@ const $ = id => document.getElementById(id);
 let analysing = false;
 let nextEstimatedTime = null;
 let lastRoundTimestamp = null;
+
+/* =========================================
+   AFFICHAGE DU RÉSULTAT IA
+========================================= */
+
+function createAIBox() {
+  let box = $("aiReview");
+
+  if (box) return box;
+
+  box = document.createElement("div");
+  box.id = "aiReview";
+
+  box.style.cssText = [
+    "margin-top:12px",
+    "padding:14px",
+    "border:1px solid #444",
+    "border-radius:10px",
+    "background:#151515",
+    "color:#fff",
+    "font-size:14px",
+    "line-height:1.5"
+  ].join(";");
+
+  const anchor = $("adaptationDetails");
+
+  if (anchor && anchor.parentNode) {
+    anchor.insertAdjacentElement("afterend", box);
+  } else {
+    document.body.appendChild(box);
+  }
+
+  return box;
+}
+
+function displayAIReview(result) {
+  const box = createAIBox();
+
+  const colors = {
+    "VALIDÉ": "#16c784",
+    "À_SURVEILLER": "#f0a52b",
+    "REJETÉ": "#e05252"
+  };
+
+  const decision = result.decision || "INCONNU";
+  const color = colors[decision] || "#aaaaaa";
+
+  const reason = result.reason || "Aucune explication fournie.";
+  const risk = result.risk || "Non précisé";
+  const confidence = result.confidence ?? "Non précisée";
+  const summary = result.summary || "";
+
+  box.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.textContent = "ANALYSE IA — NEMOTRON";
+  title.style.cssText = "font-weight:bold;margin-bottom:8px;";
+  box.appendChild(title);
+
+  const verdict = document.createElement("div");
+  verdict.textContent = decision.replace("_", " ");
+  verdict.style.cssText =
+    "font-size:19px;font-weight:bold;color:" + color +
+    ";margin-bottom:8px;";
+  box.appendChild(verdict);
+
+  const details = [
+    "Confiance d'analyse : " + confidence,
+    "Risque : " + risk,
+    "Avis : " + reason
+  ];
+
+  if (summary) {
+    details.push("Résumé : " + summary);
+  }
+
+  details.forEach(item => {
+    const line = document.createElement("div");
+    line.textContent = item;
+    line.style.marginTop = "5px";
+    box.appendChild(line);
+  });
+
+  const note = document.createElement("div");
+  note.textContent =
+    "L'IA évalue les données historiques. Elle ne prédit pas avec certitude la prochaine manche.";
+  note.style.cssText =
+    "margin-top:10px;font-size:11px;color:#aaa;";
+  box.appendChild(note);
+}
+
+function displayAIError(message) {
+  const box = createAIBox();
+
+  box.textContent =
+    "ANALYSE IA INDISPONIBLE — " + message;
+
+  box.style.color = "#f0a52b";
+}
 
 /* =========================================
    OUTILS MATHÉMATIQUES
@@ -52,6 +153,7 @@ function quantile(values, q) {
 
 function average(values) {
   if (!values.length) return 0;
+
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
@@ -79,7 +181,7 @@ function setText(id, value) {
 }
 
 /* =========================================
-   CONNEXION API
+   CONNEXION GAME DATA 365
 ========================================= */
 
 async function getHistory() {
@@ -126,7 +228,7 @@ async function getHistory() {
 }
 
 /* =========================================
-   NORMALISATION
+   NORMALISATION DES MANCHES
 ========================================= */
 
 function normalizeRounds(data) {
@@ -159,7 +261,10 @@ function normalizeRounds(data) {
         }
       } else if (rawTimestamp) {
         const parsed = Date.parse(rawTimestamp);
-        if (Number.isFinite(parsed)) timestamp = parsed;
+
+        if (Number.isFinite(parsed)) {
+          timestamp = parsed;
+        }
       }
 
       return { multiplier, timestamp };
@@ -172,6 +277,7 @@ function normalizeRounds(data) {
       if (a.timestamp && b.timestamp) {
         return a.timestamp - b.timestamp;
       }
+
       return 0;
     })
     .slice(-CONFIG.HISTORY_LIMIT);
@@ -265,7 +371,6 @@ function evaluateWindow(rounds, size) {
     .slice(-size)
     .map(r => r.multiplier);
 
-  // On étudie les manches ayant atteint au moins 2x.
   const successful = sample.filter(
     value => value >= CONFIG.MIN_COEFFICIENT
   );
@@ -318,7 +423,7 @@ function evaluateWindow(rounds, size) {
 }
 
 /* =========================================
-   MOTEUR ADAPTATIF
+   MOTEUR STATISTIQUE ADAPTATIF
 ========================================= */
 
 function adaptiveAnalysis(rounds) {
@@ -339,8 +444,6 @@ function adaptiveAnalysis(rounds) {
     };
   }
 
-  // Priorité au score statistique.
-  // En cas d'égalité, priorité à la fenêtre la plus large.
   evaluations.sort((a, b) => {
     if (b.score !== a.score) {
       return b.score - a.score;
@@ -354,16 +457,10 @@ function adaptiveAnalysis(rounds) {
   let light = "RED";
   let lightLabel = "ROUGE — INSTABILITÉ STATISTIQUE";
 
-  if (
-    best.score >= 75 &&
-    !regime.strongChange
-  ) {
+  if (best.score >= 75 && !regime.strongChange) {
     light = "GREEN";
     lightLabel = "VERT — STABILITÉ HISTORIQUE";
-  } else if (
-    best.score >= 50 &&
-    !regime.strongChange
-  ) {
+  } else if (best.score >= 50 && !regime.strongChange) {
     light = "ORANGE";
     lightLabel = "ORANGE — STABILITÉ MODÉRÉE";
   }
@@ -385,12 +482,102 @@ function adaptiveAnalysis(rounds) {
 }
 
 /* =========================================
+   ANALYSE IA VIA OPENROUTER
+========================================= */
+
+async function requestAIReview(stats, rounds) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    CONFIG.AI_TIMEOUT
+  );
+
+  const payload = {
+    stats: {
+      central: stats.central,
+      low: stats.low,
+      high: stats.high,
+      score: stats.score,
+      hitRate: stats.hitRate,
+      successfulCount: stats.successfulCount,
+      windowSize: stats.windowSize,
+      stabilityScore:
+        stats.evaluations.find(
+          e => e.size === stats.windowSize
+        )?.stabilityScore ?? null
+    },
+
+    regime: stats.regime,
+
+    rounds: rounds.slice(-30).map(round => ({
+      multiplier: round.multiplier,
+      timestamp: round.timestamp
+    }))
+  };
+
+  try {
+    const response = await fetch(
+      CONFIG.API + "/api/ai-analysis",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+        signal: controller.signal
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || "Erreur IA HTTP " + response.status
+      );
+    }
+
+    const allowed = [
+      "VALIDÉ",
+      "À_SURVEILLER",
+      "REJETÉ"
+    ];
+
+    if (!allowed.includes(result.decision)) {
+      throw new Error("Décision IA invalide.");
+    }
+
+    // Sécurité : le coefficient reste celui du moteur statistique.
+    result.coefficient = stats.central;
+
+    if (stats.central < CONFIG.MIN_COEFFICIENT) {
+      result.decision = "REJETÉ";
+    }
+
+    return result;
+
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Délai de réponse de Nemotron dépassé.");
+    }
+
+    throw error;
+
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/* =========================================
    FEUX LUMINEUX
 ========================================= */
 
 function updateTrafficLight(light, label) {
   ["lightGreen", "lightOrange", "lightRed"].forEach(id => {
     const el = $(id);
+
     if (el) el.classList.remove("active");
   });
 
@@ -402,6 +589,7 @@ function updateTrafficLight(light, label) {
 
   if (mapping[light]) {
     const selected = $(mapping[light]);
+
     if (selected) selected.classList.add("active");
   }
 
@@ -413,8 +601,9 @@ function updateTrafficLight(light, label) {
 ========================================= */
 
 function analyseTime(rounds) {
-  const timedRounds = rounds
-    .filter(r => Number.isFinite(r.timestamp));
+  const timedRounds = rounds.filter(
+    r => Number.isFinite(r.timestamp)
+  );
 
   if (timedRounds.length < 6) {
     return null;
@@ -450,7 +639,7 @@ function analyseTime(rounds) {
 }
 
 /* =========================================
-   AFFICHAGE SANS CANDIDAT
+   AFFICHAGE SANS SIGNAL
 ========================================= */
 
 function displayNoSignal(reason) {
@@ -471,10 +660,7 @@ function displayNoSignal(reason) {
 ========================================= */
 
 function displaySignal(stats, timing) {
-  setText(
-    "coefficient",
-    formatMultiplier(stats.central)
-  );
+  setText("coefficient", formatMultiplier(stats.central));
 
   setText(
     "range",
@@ -490,10 +676,7 @@ function displaySignal(stats, timing) {
     stats.windowSize + " manches"
   );
 
-  updateTrafficLight(
-    stats.light,
-    stats.lightLabel
-  );
+  updateTrafficLight(stats.light, stats.lightLabel);
 
   if (timing) {
     if (
@@ -508,16 +691,18 @@ function displaySignal(stats, timing) {
     lastRoundTimestamp = timing.latestTimestamp;
 
     updateCountdown();
+
   } else {
     nextEstimatedTime = null;
     lastRoundTimestamp = null;
+
     setText("estimatedTime", "--:--:--");
     setText("countdown", "--:--:--");
   }
 }
 
 /* =========================================
-   AFFICHAGE ADAPTATIF
+   ADAPTATION
 ========================================= */
 
 function displayAdaptation(stats) {
@@ -566,6 +751,7 @@ function updateCountdown() {
     });
 
   setText("estimatedTime", time);
+
   setText(
     "countdown",
     remaining === 0 ? "ÉCHÉANCE" : countdown
@@ -583,7 +769,10 @@ async function runAnalysis() {
 
   try {
     setText("signalStatus", "RÉCUPÉRATION DES DONNÉES...");
-    setText("adaptationStatus", "ANALYSE EN COURS");
+    setText("adaptationStatus", "ANALYSE STATISTIQUE");
+
+    const aiBox = createAIBox();
+    aiBox.textContent = "En attente de l'analyse de Nemotron...";
 
     const data = await getHistory();
     const rounds = normalizeRounds(data);
@@ -595,15 +784,13 @@ async function runAnalysis() {
         CONFIG.MIN_ROUNDS + " manches."
       );
 
-      setText(
-        "adaptationStatus",
-        "DONNÉES INSUFFISANTES"
-      );
-
+      setText("adaptationStatus", "DONNÉES INSUFFISANTES");
       setText(
         "adaptationDetails",
         "Vérifie le nombre de manches retournées par l'API."
       );
+
+      aiBox.textContent = "Analyse IA non effectuée : historique insuffisant.";
 
       return;
     }
@@ -614,20 +801,56 @@ async function runAnalysis() {
 
     if (!stats.valid) {
       displayNoSignal(stats.reason);
+      aiBox.textContent = "Analyse IA non effectuée : aucun candidat statistique.";
 
-      console.log("Fenêtres analysées :", CONFIG.WINDOWS);
-      console.log("Résultat :", stats);
+      console.log("Résultat statistique :", stats);
+      return;
+    }
+
+    setText("signalStatus", "ÉVALUATION PAR NEMOTRON...");
+    setText("adaptationStatus", "VALIDATION IA EN COURS");
+
+    // L'IA examine les statistiques avant l'affichage du signal final.
+    const aiResult = await requestAIReview(stats, rounds);
+
+    displayAIReview(aiResult);
+
+    console.log("Décision Nemotron :", aiResult);
+
+    if (aiResult.decision === "REJETÉ") {
+      displayNoSignal("CANDIDAT REJETÉ PAR NEMOTRON");
+
+      setText(
+        "adaptationStatus",
+        "CANDIDAT REJETÉ PAR L'IA"
+      );
 
       return;
     }
 
-    // L'heure est facultative :
-    // son absence ne bloque plus le signal.
     const timing = analyseTime(rounds);
 
     displaySignal(stats, timing);
 
-    console.log("AI CRASH ADAPTIVE ANALYSIS", {
+    if (aiResult.decision === "À_SURVEILLER") {
+      setText(
+        "signalStatus",
+        "À SURVEILLER — CANDIDAT NON VALIDÉ · " +
+        formatMultiplier(stats.central)
+      );
+
+      setText(
+        "adaptationStatus",
+        "SURVEILLANCE RECOMMANDÉE"
+      );
+    } else {
+      setText(
+        "adaptationStatus",
+        "CANDIDAT VALIDÉ PAR NEMOTRON"
+      );
+    }
+
+    console.log("AI CRASH FINAL ANALYSIS", {
       totalManches: rounds.length,
       coefficientCentral: stats.central,
       fourchette: [stats.low, stats.high],
@@ -636,13 +859,15 @@ async function runAnalysis() {
       fenetre: stats.windowSize,
       manchesSuperieuresA2: stats.successfulCount,
       tauxHistorique: stats.hitRate,
-      evaluations: stats.evaluations
+      decisionIA: aiResult.decision
     });
 
   } catch (error) {
     console.error("AI CRASH BOT :", error);
 
     displayNoSignal("ERREUR : " + error.message);
+
+    displayAIError(error.message);
 
     setText("adaptationStatus", "ERREUR");
     setText("adaptationDetails", error.message);
@@ -669,5 +894,4 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initialize);
 } else {
   initialize();
-        }
-     
+}
