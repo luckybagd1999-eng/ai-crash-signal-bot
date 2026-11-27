@@ -5,29 +5,102 @@ const http = require("http");
 
 const PORT = process.env.PORT || 3000;
 
-// GAME DATA 365
 const API_KEY = process.env.GAMEDATA365_API_KEY;
 const API_BASE = "https://api.gamedata365.com";
 
-// OPENROUTER
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 const AI_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
 
-const ALLOWED_ORIGIN =
-  "https://luckybagd1999-eng.github.io";
+const ALLOWED_ORIGIN = "https://luckybagd1999-eng.github.io";
+
+// Limitation simple pour éviter les appels abusifs.
+const requestCounts = new Map();
+
+function send(res, status, data) {
+  if (res.writableEnded) return;
+
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8"
+  });
+
+  res.end(JSON.stringify(data));
+}
+
+function rateLimit(req) {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim()
+    || req.socket.remoteAddress
+    || "unknown";
+
+  const now = Date.now();
+  const entry = requestCounts.get(ip);
+
+  if (!entry || now - entry.start > 60000) {
+    requestCounts.set(ip, { start: now, count: 1 });
+    return true;
+  }
+
+  entry.count++;
+  return entry.count <= 15;
+}
+
+async function readBody(req) {
+  let body = "";
+
+  for await (const chunk of req) {
+    body += chunk.toString();
+
+    if (body.length > 100000) {
+      throw new Error("BODY_TOO_LARGE");
+    }
+  }
+
+  return JSON.parse(body);
+}
+
+function extractAIResult(message) {
+  // 1. Réponse structurée par appel de fonction.
+  const calls = message?.tool_calls || [];
+
+  for (const call of calls) {
+    if (call.function?.name === "submit_analysis") {
+      return JSON.parse(call.function.arguments);
+    }
+  }
+
+  // 2. Réponse textuelle classique.
+  let content = message?.content;
+
+  if (Array.isArray(content)) {
+    content = content
+      .filter(item => item.type === "text")
+      .map(item => item.text || "")
+      .join("\n");
+  }
+
+  if (typeof content === "string" && content.trim()) {
+    const cleaned = content
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+
+    if (start !== -1 && end > start) {
+      return JSON.parse(cleaned.substring(start, end + 1));
+    }
+  }
+
+  return null;
+}
 
 const server = http.createServer(async (req, res) => {
 
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
-
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -36,14 +109,9 @@ const server = http.createServer(async (req, res) => {
 
   const path = new URL(req.url, "http://localhost").pathname;
 
-  function send(status, data) {
-    res.writeHead(status);
-    res.end(JSON.stringify(data));
-  }
-
   // PAGE D'ACCUEIL
   if (path === "/") {
-    return send(200, {
+    return send(res, 200, {
       name: "AI CRASH API",
       status: "online",
       gameData365: Boolean(API_KEY),
@@ -52,25 +120,22 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // =====================================
   // GAME DATA 365
-  // =====================================
-
   if (path === "/api/live" || path === "/api/history") {
 
+    if (req.method !== "GET") {
+      return send(res, 405, { error: "Méthode non autorisée." });
+    }
+
     if (!API_KEY) {
-      return send(500, {
-        error: "Clé GameData365 non configurée sur Render."
+      return send(res, 500, {
+        error: "Clé GameData365 absente."
       });
     }
 
-    let endpoint;
-
-    if (path === "/api/live") {
-      endpoint = "/v1/crash/live";
-    } else {
-      endpoint = "/v1/crash/history?game=lucky_jet&limit=100";
-    }
+    const endpoint = path === "/api/live"
+      ? "/v1/crash/live"
+      : "/v1/crash/history?game=lucky_jet&limit=100";
 
     try {
       const response = await fetch(API_BASE + endpoint, {
@@ -83,78 +148,92 @@ const server = http.createServer(async (req, res) => {
 
       const data = await response.text();
 
-      res.writeHead(response.status);
+      res.writeHead(response.status, {
+        "Content-Type": "application/json; charset=utf-8"
+      });
+
       return res.end(data);
 
     } catch (error) {
-      return send(502, {
-        error: "Erreur de connexion à GameData365.",
+      console.error("GAMEDATA365 ERROR:", error.message);
+
+      return send(res, 502, {
+        error: "Erreur GameData365.",
         details: error.message
       });
     }
   }
 
-  // =====================================
-  // OPENROUTER AI ANALYSIS
-  // =====================================
-
+  // OPENROUTER
   if (path === "/api/ai-analysis") {
 
     if (req.method !== "POST") {
-      return send(405, {
-        error: "Méthode non autorisée. Utilise POST."
+      return send(res, 405, {
+        error: "Utilise la méthode POST."
+      });
+    }
+
+    if (!rateLimit(req)) {
+      return send(res, 429, {
+        error: "Trop de demandes. Réessaie dans une minute."
       });
     }
 
     if (!OPENROUTER_API_KEY) {
-      return send(503, {
+      return send(res, 503, {
         error: "Clé OpenRouter absente de Render."
       });
     }
 
     try {
 
-      // Lecture des données envoyées par le bot
-      let body = "";
-      let tooLarge = false;
-
-      for await (const chunk of req) {
-        body += chunk;
-
-        if (body.length > 100000) {
-          tooLarge = true;
-          break;
-        }
-      }
-
-      if (tooLarge) {
-        return send(413, {
-          error: "Données d'analyse trop volumineuses."
-        });
-      }
-
       let input;
 
       try {
-        input = JSON.parse(body);
-      } catch {
-        return send(400, {
+        input = await readBody(req);
+      } catch (error) {
+        if (error.message === "BODY_TOO_LARGE") {
+          return send(res, 413, {
+            error: "Données trop volumineuses."
+          });
+        }
+
+        return send(res, 400, {
           error: "Format JSON invalide."
         });
       }
 
       const stats = input.stats;
+
       const rounds = Array.isArray(input.rounds)
         ? input.rounds.slice(-100)
         : [];
 
-      if (!stats || typeof stats !== "object") {
-        return send(400, {
-          error: "Statistiques manquantes."
+      if (
+        !stats ||
+        !Number.isFinite(Number(stats.central)) ||
+        !Number.isFinite(Number(stats.score))
+      ) {
+        return send(res, 400, {
+          error: "Statistiques invalides ou manquantes."
         });
       }
 
-      // Préparation des données pour l'IA
+      const originalCoefficient = Number(stats.central);
+
+      if (originalCoefficient < 2) {
+        return send(res, 200, {
+          success: true,
+          model: AI_MODEL,
+          decision: "REJETÉ",
+          coefficient: null,
+          confidence: 0,
+          reason: "Le seuil minimum de 2.00x n'est pas respecté.",
+          risk: "ÉLEVÉ",
+          summary: "Candidat rejeté par le filtre statistique."
+        });
+      }
+
       const analysisData = {
         game: "Lucky Jet",
         statistics: stats,
@@ -163,90 +242,95 @@ const server = http.createServer(async (req, res) => {
       };
 
       const systemPrompt = `
-Tu es un analyste statistique spécialisé dans
-l'étude des historiques de jeux Crash.
+Tu es un analyste statistique de jeux Crash.
 
-Tu analyses exclusivement les données reçues.
+Tu dois examiner les données historiques reçues.
 
-IMPORTANT :
+RÈGLES ABSOLUES :
 
-1. Lucky Jet est un jeu à résultats aléatoires.
-2. Tu ne peux pas connaître le prochain résultat.
-3. Tu ne dois jamais présenter une hypothèse comme une certitude.
-4. Tu ne dois jamais inventer de données.
-5. Tu dois examiner la stabilité, la fréquence des
-   coefficients supérieurs ou égaux à 2.00x,
-   la volatilité et les changements de régime.
-6. Tu dois respecter le seuil minimum de 2.00x.
-7. Tu ne dois jamais augmenter artificiellement
-   le coefficient central fourni par le moteur statistique.
-8. Si les données sont insuffisantes ou contradictoires,
-   tu dois rejeter le candidat.
+- Le jeu reste aléatoire.
+- Tu ne connais pas le prochain résultat.
+- Tu ne dois inventer aucune donnée.
+- Le seuil minimal est 2.00x.
+- Examine la fréquence, la stabilité, la volatilité
+  et les changements de régime.
+- Le coefficient central est calculé par le moteur
+  statistique. Tu ne dois jamais le modifier.
+- Si les données sont faibles ou contradictoires,
+  rejette le candidat.
+- La confiance mesure la qualité de l'analyse,
+  jamais une probabilité de gain.
 
-Tu dois rendre UNE décision parmi :
+DÉCISIONS POSSIBLES :
 
 VALIDÉ
 À_SURVEILLER
 REJETÉ
 
-Signification :
+VALIDÉ : cohérence historique suffisante.
+À_SURVEILLER : résultats intéressants mais incertains.
+REJETÉ : données insuffisantes ou instables.
 
-VALIDÉ :
-Les données historiques sont relativement cohérentes
-et le candidat mérite d'être retenu comme signal indicatif.
-
-À_SURVEILLER :
-Il existe des éléments intéressants mais aussi
-des incertitudes ou une instabilité.
-
-REJETÉ :
-Les données sont trop faibles, contradictoires
-ou le seuil de 2.00x n'est pas respecté.
-
-Tu ne prédis jamais un résultat certain.
-Tu ne fabriques jamais un coefficient futur.
-
-Réponds uniquement avec un objet JSON valide
-respectant exactement cette structure :
-
-{
-  "decision": "VALIDÉ",
-  "coefficient": 2.00,
-  "confidence": 50,
-  "reason": "Explication statistique courte",
-  "risk": "MODÉRÉ",
-  "summary": "Conclusion de l'analyse"
-}
-
-Le coefficient doit être exactement celui
-du moteur statistique reçu, ou null si aucun
-candidat valide n'existe.
-
-Confidence est un score de confiance dans
-la qualité de l'analyse, pas une probabilité
-de gagner.
+Retourne une seule décision structurée.
+Ne prédis jamais un coefficient futur.
 `;
 
-      const userPrompt = `
-Analyse les données suivantes et prends ta décision.
+      // Fonction structurée demandée au modèle.
+      const tools = [
+        {
+          type: "function",
+          function: {
+            name: "submit_analysis",
+            description: "Retourne la décision finale de l'analyse statistique.",
+            parameters: {
+              type: "object",
+              properties: {
+                decision: {
+                  type: "string",
+                  enum: ["VALIDÉ", "À_SURVEILLER", "REJETÉ"]
+                },
+                coefficient: {
+                  type: ["number", "null"]
+                },
+                confidence: {
+                  type: "number"
+                },
+                reason: {
+                  type: "string"
+                },
+                risk: {
+                  type: "string"
+                },
+                summary: {
+                  type: "string"
+                }
+              },
+              required: [
+                "decision",
+                "coefficient",
+                "confidence",
+                "reason",
+                "risk",
+                "summary"
+              ],
+              additionalProperties: false
+            }
+          }
+        }
+      ];
 
-${JSON.stringify(analysisData)}
-`;
+      console.log("Demande envoyée à Nemotron.");
 
-      // Appel OpenRouter
       const response = await fetch(OPENROUTER_URL, {
         method: "POST",
-
         headers: {
           "Authorization": "Bearer " + OPENROUTER_API_KEY,
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://luckybagd1999-eng.github.io",
+          "HTTP-Referer": ALLOWED_ORIGIN,
           "X-OpenRouter-Title": "AI CRASH SIGNAL BOT"
         },
-
         body: JSON.stringify({
           model: AI_MODEL,
-
           messages: [
             {
               role: "system",
@@ -254,65 +338,79 @@ ${JSON.stringify(analysisData)}
             },
             {
               role: "user",
-              content: userPrompt
+              content:
+                "Analyse ces données et rends ta décision :\n" +
+                JSON.stringify(analysisData)
             }
           ],
-
+          tools,
+          tool_choice: {
+            type: "function",
+            function: {
+              name: "submit_analysis"
+            }
+          },
           temperature: 0.1,
-          max_tokens: 700
+          max_tokens: 1800
         }),
-
-        signal: AbortSignal.timeout(45000)
+        signal: AbortSignal.timeout(90000)
       });
 
-      const result = await response.json();
+      const responseText = await response.text();
 
-      if (!response.ok) {
-        console.error("OpenRouter error:", result);
-
-        return send(502, {
-          error: "OpenRouter a refusé la demande.",
-          details: result.error?.message || "Erreur du fournisseur IA."
-        });
-      }
-
-      const content =
-        result.choices?.[0]?.message?.content;
-
-      if (!content) {
-        return send(502, {
-          error: "Réponse vide de Nemotron."
-        });
-      }
-
-      // Extraction du JSON retourné par le modèle
-      let aiResult;
+      let result;
 
       try {
-        const cleaned = content
-          .replace(/```json/gi, "")
-          .replace(/```/g, "")
-          .trim();
-
-        const start = cleaned.indexOf("{");
-        const end = cleaned.lastIndexOf("}");
-
-        if (start === -1 || end === -1) {
-          throw new Error("JSON absent.");
-        }
-
-        aiResult = JSON.parse(
-          cleaned.substring(start, end + 1)
-        );
-
+        result = JSON.parse(responseText);
       } catch {
-        return send(502, {
-          error: "Réponse Nemotron non exploitable.",
-          raw: content
+        console.error("OpenRouter réponse non JSON:", response.status);
+
+        return send(res, 502, {
+          error: "Réponse OpenRouter illisible.",
+          httpStatus: response.status
         });
       }
 
-      // Vérification de la décision
+      if (!response.ok) {
+        console.error("OPENROUTER ERROR:", {
+          status: response.status,
+          error: result.error?.message || "Erreur inconnue"
+        });
+
+        return send(res, 502, {
+          error: "OpenRouter a refusé la demande.",
+          httpStatus: response.status,
+          details: result.error?.message || "Erreur fournisseur."
+        });
+      }
+
+      const choice = result.choices?.[0];
+      const message = choice?.message;
+
+      console.log("Nemotron finish_reason:", choice?.finish_reason);
+      console.log("Nemotron usage:", result.usage || "Non fourni");
+
+      const aiResult = extractAIResult(message);
+
+      if (!aiResult) {
+        console.error("NEMOTRON EMPTY RESPONSE:", {
+          finishReason: choice?.finish_reason,
+          hasMessage: Boolean(message),
+          hasContent: Boolean(message?.content),
+          hasToolCalls: Boolean(message?.tool_calls?.length),
+          hasReasoning: Boolean(message?.reasoning),
+          provider: result.provider || null
+        });
+
+        return send(res, 502, {
+          error: "Nemotron n'a fourni aucune décision exploitable.",
+          finishReason: choice?.finish_reason || null,
+          hasReasoning: Boolean(message?.reasoning),
+          hasContent: Boolean(message?.content),
+          hasToolCalls: Boolean(message?.tool_calls?.length)
+        });
+      }
+
       const allowedDecisions = [
         "VALIDÉ",
         "À_SURVEILLER",
@@ -320,34 +418,25 @@ ${JSON.stringify(analysisData)}
       ];
 
       if (!allowedDecisions.includes(aiResult.decision)) {
-        return send(502, {
-          error: "Décision IA invalide."
+        return send(res, 502, {
+          error: "Décision Nemotron invalide."
         });
       }
 
-      // Le modèle ne peut pas modifier le coefficient.
-      const originalCoefficient =
-        Number(stats.central);
+      // Le coefficient original est toujours conservé.
+      const decision = aiResult.decision;
 
-      const coefficient =
-        Number.isFinite(originalCoefficient) &&
-        originalCoefficient >= 2
-          ? originalCoefficient
-          : null;
+      const confidence = Math.max(
+        0,
+        Math.min(100, Number(aiResult.confidence) || 0)
+      );
 
-      if (coefficient === null) {
-        aiResult.decision = "REJETÉ";
-      }
-
-      return send(200, {
+      return send(res, 200, {
         success: true,
         model: AI_MODEL,
-        decision: aiResult.decision,
-        coefficient,
-        confidence: Math.max(
-          0,
-          Math.min(100, Number(aiResult.confidence) || 0)
-        ),
+        decision,
+        coefficient: originalCoefficient,
+        confidence,
         reason: String(aiResult.reason || ""),
         risk: String(aiResult.risk || "INCONNU"),
         summary: String(aiResult.summary || ""),
@@ -358,18 +447,14 @@ ${JSON.stringify(analysisData)}
 
       console.error("AI ANALYSIS ERROR:", error);
 
-      return send(502, {
+      return send(res, 502, {
         error: "Erreur pendant l'analyse IA.",
         details: error.message
       });
     }
   }
 
-  // =====================================
-  // ROUTE INCONNUE
-  // =====================================
-
-  return send(404, {
+  return send(res, 404, {
     error: "Endpoint introuvable."
   });
 
@@ -381,4 +466,4 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("OpenRouter :", Boolean(OPENROUTER_API_KEY));
   console.log("Modèle IA :", AI_MODEL);
 });
-    
+        
